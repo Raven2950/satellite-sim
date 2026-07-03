@@ -4,10 +4,11 @@ const { Ion, IonResource } = Cesium;
 
 /** 本地 glb 超过此大小（MB）时改用 Ion 托管模型 */
 const DEFAULT_MAX_LOCAL_MB = 12;
+/** 小于此字节数视为“没有有效本地模型” */
+const MIN_LOCAL_BYTES = 100_000;
 
 /**
  * Ion 上常见的 glTF 模型（按优先级尝试；需有效 Ion Token）
- * 2524683 / 265696 为社区常用的卫星类资产，96188 为 Cesium Air 兜底
  */
 const DEFAULT_ION_ASSET_IDS = [2524683, 265696, 96188];
 
@@ -16,10 +17,8 @@ async function _localHead(uri) {
     const res = await fetch(uri, { method: 'HEAD' });
     if (!res.ok) return { exists: false, sizeMb: null };
     const bytes = parseInt(res.headers.get('content-length') || '0', 10);
-    return {
-      exists: true,
-      sizeMb: bytes > 0 ? bytes / (1024 * 1024) : 0,
-    };
+    if (bytes < MIN_LOCAL_BYTES) return { exists: false, sizeMb: null };
+    return { exists: true, sizeMb: bytes / (1024 * 1024) };
   } catch {
     return { exists: false, sizeMb: null };
   }
@@ -56,13 +55,20 @@ async function _tryIonAsset(assetId) {
   }
 }
 
-async function _tryLocalGltf(uri) {
-  return uri;
+async function _resolveIon(ionAssetIds) {
+  for (const assetId of ionAssetIds) {
+    const url = await _tryIonAsset(assetId);
+    if (url) {
+      console.info(`Satellite model: Cesium Ion asset ${assetId}`);
+      return url;
+    }
+  }
+  return null;
 }
 
 /**
- * 解析卫星 glTF 资源：本地过大或加载失败时回退 Ion
- * @returns {Promise<string|import('cesium').Resource|null>}
+ * 解析卫星 glTF 资源：本地过大或不存在时使用 Ion
+ * @returns {Promise<string|null>}
  */
 export async function resolveSatelliteModelUri(modelConfig = {}) {
   const {
@@ -72,10 +78,14 @@ export async function resolveSatelliteModelUri(modelConfig = {}) {
     forceIon = false,
   } = modelConfig;
 
+  if (forceIon) {
+    return _resolveIon(ionAssetIds);
+  }
+
   const { exists: localExists, sizeMb } = await _localHead(localUri);
   const localTooLarge = localExists && sizeMb !== null && sizeMb > maxLocalSizeMb;
 
-  if (!forceIon && localExists && !localTooLarge && localUri) {
+  if (localExists && !localTooLarge && localUri) {
     console.info(
       `Satellite model: local ${localUri}${sizeMb ? ` (${sizeMb.toFixed(1)} MB)` : ''}`,
     );
@@ -84,21 +94,16 @@ export async function resolveSatelliteModelUri(modelConfig = {}) {
 
   if (localTooLarge) {
     console.info(
-      `Local model ${sizeMb.toFixed(1)} MB > ${maxLocalSizeMb} MB, using Cesium Ion fallback`,
+      `Local model ${sizeMb.toFixed(1)} MB > ${maxLocalSizeMb} MB, using Cesium Ion`,
     );
   }
 
-  for (const assetId of ionAssetIds) {
-    const resource = await _tryIonAsset(assetId);
-    if (resource) {
-      console.info(`Satellite model: Cesium Ion asset ${assetId}`);
-      return resource;
-    }
-  }
+  const ionUrl = await _resolveIon(ionAssetIds);
+  if (ionUrl) return ionUrl;
 
-  if (localUri) {
-    console.warn('Ion models unavailable, falling back to local glb');
-    return _tryLocalGltf(localUri);
+  if (localExists && localUri) {
+    console.warn('Ion unavailable, using local glb');
+    return localUri;
   }
 
   return null;
