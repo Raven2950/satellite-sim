@@ -65,6 +65,7 @@ export const DEFAULT_SATELLITES = [
         localUri: `${import.meta.env.BASE_URL}models/satellite.glb`,
         maxLocalSizeMb: 12,
         ionAssetIds: [5015623],
+        forceIon: import.meta.env.PROD,
         scale: 1,
         /** 屏幕固定尺寸（约 24px 的 1.75 倍） */
         minimumPixelSize: 42,

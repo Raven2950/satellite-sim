@@ -26,12 +26,33 @@ async function _localHead(uri) {
 }
 
 async function _tryIonAsset(assetId) {
-  if (!Ion.defaultAccessToken) return null;
+  const token = Ion.defaultAccessToken;
+  if (!token) return null;
+
   try {
-    return await IonResource.fromAssetId(assetId);
+    const res = await fetch(
+      `https://api.cesium.com/v1/assets/${assetId}/endpoint?access_token=${encodeURIComponent(token)}`,
+    );
+    if (!res.ok) {
+      throw new Error(`${res.status} ${await res.text()}`);
+    }
+    const data = await res.json();
+    if (!data?.url || !data?.accessToken) {
+      throw new Error('Invalid Ion endpoint response');
+    }
+    return `${data.url}?access_token=${data.accessToken}`;
   } catch (err) {
     console.warn(`Ion asset ${assetId} unavailable:`, err?.message ?? err);
-    return null;
+    try {
+      const resource = await IonResource.fromAssetId(assetId);
+      if (typeof resource.getUrlComponent === 'function') {
+        return resource.getUrlComponent(true);
+      }
+      return String(resource);
+    } catch (fallbackErr) {
+      console.warn(`Ion asset ${assetId} fallback failed:`, fallbackErr?.message ?? fallbackErr);
+      return null;
+    }
   }
 }
 

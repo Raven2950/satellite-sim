@@ -96,15 +96,51 @@ export class Satellite {
           minimumPixelSize: modelCfg.minimumPixelSize ?? 42,
           maximumPixelSize: modelCfg.maximumPixelSize ?? 42,
         };
-        if (this.entity.point) this.entity.point.show = false;
-        return true;
+        this.viewer.scene.requestRender();
+
+        const loaded = await this._waitForModelReady(25000);
+        if (loaded && this.entity.point) {
+          this.entity.point.show = false;
+        } else if (!loaded) {
+          console.warn('Satellite model did not become ready, keeping point marker');
+          this.entity.model = undefined;
+        }
+        return loaded;
       } catch (err) {
         console.warn('Satellite model failed:', err);
+        this.entity.model = undefined;
         return false;
       }
     })();
 
     return this._modelLoadPromise;
+  }
+
+  async _waitForModelReady(timeoutMs) {
+    const viewer = this.viewer;
+    const entity = this.entity;
+    const deadline = performance.now() + timeoutMs;
+
+    while (performance.now() < deadline) {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      viewer.scene.requestRender();
+
+      const modelGraphics = entity.model;
+      if (!modelGraphics) continue;
+
+      const modelPrimitive =
+        modelGraphics._model?.getValue?.() ??
+        modelGraphics._model?._value ??
+        modelGraphics._model;
+
+      if (modelPrimitive?.ready) return true;
+      if (modelPrimitive?.error) {
+        console.warn('Satellite model load error:', modelPrimitive.error);
+        return false;
+      }
+    }
+
+    return false;
   }
 
   update(currentTime) {
