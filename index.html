@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>卫星仿真 - Satellite Sim</title>
+  </head>
+  <body>
+    <div id="app">
+      <div id="cesiumContainer"></div>
+      <div id="loadingOverlay" class="loading-overlay">正在加载地球…</div>
+
+      <div id="hud">
+        <section class="hud-panel hud-panel-first">
+          <h2>卫星参数</h2>
+          <dl id="paramDisplay"></dl>
+        </section>
+      </div>
+
+      <div id="timeBar" class="wf-controls-float">
+        <div class="wf-left-col">
+            <div class="wf-watch-face">
+              <div class="wf-watch-ring"></div>
+              <div class="wf-watch-inner">
+                <div class="wf-watch-badge">UTC</div>
+                <div id="watchTime" class="wf-watch-time">00:00:00</div>
+                <div id="watchDate" class="wf-watch-date">JAN 01 2024</div>
+              </div>
+            </div>
+            <div class="wf-controls">
+              <button type="button" id="btnLive" class="wf-btn wf-btn-live active">
+                <span class="wf-live-dot"></span>LIVE
+              </button>
+              <button type="button" id="btnPlay" class="wf-btn wf-btn-icon" aria-label="播放">
+                <svg class="wf-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+              </button>
+              <button type="button" id="btnSpeed1" class="wf-btn wf-btn-icon" title="倍速1 (600×)">
+                <svg class="wf-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/></svg>
+              </button>
+              <button type="button" id="btnSpeed2" class="wf-btn wf-btn-icon" title="倍速2 (1000×)">
+                <svg class="wf-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M4 18l8.5-6L4 6v12zm9 0l8.5-6-8.5-6v12zm9 0l8.5-6-8.5-6v12z"/></svg>
+              </button>
+            </div>
+          </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
