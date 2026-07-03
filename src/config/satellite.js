@@ -62,7 +62,7 @@ export const DEFAULT_SATELLITES = [
       pointSize: 14,
       /** 3D 模型：本地 glb 超过 maxLocalSizeMb 时自动改用 Ion */
       model: {
-        localUri: '/models/satellite.glb',
+        localUri: `${import.meta.env.BASE_URL}models/satellite.glb`,
         maxLocalSizeMb: 12,
         ionAssetIds: [5015623],
         scale: 1,

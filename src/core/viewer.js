@@ -10,7 +10,7 @@ const {
   Color,
 } = Cesium;
 
-const NATURAL_EARTH_URL = '/cesium/Assets/Textures/NaturalEarthII';
+const NATURAL_EARTH_URL = `${import.meta.env.BASE_URL}cesium/Assets/Textures/NaturalEarthII`;
 
 export function setGlobeStatus(message, ok = true) {
   const el = document.getElementById('globeStatus');
@@ -26,7 +26,14 @@ export async function setupImagery(viewer) {
   const tryAdd = async (label, create) => {
     try {
       const provider = await create();
-      if (provider.readyPromise) await provider.readyPromise;
+      if (provider.readyPromise) {
+        await Promise.race([
+          provider.readyPromise,
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error(`${label} timeout`)), 15000),
+          ),
+        ]);
+      }
       viewer.imageryLayers.addImageryProvider(provider);
       setGlobeStatus(`地球影像已加载：${label}`);
       return true;
