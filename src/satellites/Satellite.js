@@ -11,7 +11,7 @@ import { SwathManager } from '../swath/manager.js';
 import { resolveSatelliteModelUri } from './modelLoader.js';
 import { SensorCone, computeNadirOrientation } from './sensorCone.js';
 
-const { JulianDate } = Cesium;
+const { JulianDate, Model, Matrix4, Cartesian3 } = Cesium;
 
 export class Satellite {
   constructor(viewer, config, orbitEpoch) {
@@ -31,6 +31,7 @@ export class Satellite {
     this._lastFrameSec = null;
     this.swathCount = 0;
     this._modelLoadPromise = null;
+    this._modelPrimitive = null;
 
     const halfWidthM = (config.sensor.swathWidthKm * 1000) / 2;
     const coneOpts = config.appearance?.sensorCone ?? {};
@@ -90,57 +91,25 @@ export class Satellite {
       if (!uri) return false;
 
       try {
-        this.entity.model = {
-          uri,
+        const model = await Model.fromGltfAsync({
+          url: uri,
           scale: modelCfg.scale ?? 1,
           minimumPixelSize: modelCfg.minimumPixelSize ?? 42,
           maximumPixelSize: modelCfg.maximumPixelSize ?? 42,
-        };
-        this.viewer.scene.requestRender();
+        });
 
-        const loaded = await this._waitForModelReady(25000);
-        if (loaded && this.entity.point) {
-          this.entity.point.show = false;
-        } else if (!loaded) {
-          console.warn('Satellite model did not become ready, keeping point marker');
-          this.entity.model = undefined;
-        }
-        return loaded;
+        this.viewer.scene.primitives.add(model);
+        this._modelPrimitive = model;
+        if (this.entity.point) this.entity.point.show = false;
+        this.viewer.scene.requestRender();
+        return true;
       } catch (err) {
         console.warn('Satellite model failed:', err);
-        this.entity.model = undefined;
         return false;
       }
     })();
 
     return this._modelLoadPromise;
-  }
-
-  async _waitForModelReady(timeoutMs) {
-    const viewer = this.viewer;
-    const entity = this.entity;
-    const deadline = performance.now() + timeoutMs;
-
-    while (performance.now() < deadline) {
-      await new Promise((resolve) => requestAnimationFrame(resolve));
-      viewer.scene.requestRender();
-
-      const modelGraphics = entity.model;
-      if (!modelGraphics) continue;
-
-      const modelPrimitive =
-        modelGraphics._model?.getValue?.() ??
-        modelGraphics._model?._value ??
-        modelGraphics._model;
-
-      if (modelPrimitive?.ready) return true;
-      if (modelPrimitive?.error) {
-        console.warn('Satellite model load error:', modelPrimitive.error);
-        return false;
-      }
-    }
-
-    return false;
   }
 
   update(currentTime) {
@@ -163,6 +132,20 @@ export class Satellite {
       roll: modelCfg.rollDeg ?? 0,
       yaw: modelCfg.yawDeg ?? 0,
     });
+
+    if (this._modelPrimitive) {
+      const quat = computeNadirOrientation(pos, vel, this.ellipsoid, {
+        pitch: modelCfg.pitchDeg ?? 0,
+        roll: modelCfg.rollDeg ?? 0,
+        yaw: modelCfg.yawDeg ?? 0,
+      });
+      const scale = modelCfg.scale ?? 1;
+      this._modelPrimitive.modelMatrix = Matrix4.fromTranslationQuaternionRotationScale(
+        pos,
+        quat,
+        new Cartesian3(scale, scale, scale),
+      );
+    }
 
     // 绿色锥从模型中心垂直射向地面
     this.sensorCone.update(pos, ground, vel);
@@ -196,6 +179,10 @@ export class Satellite {
   }
 
   destroy() {
+    if (this._modelPrimitive) {
+      this.viewer.scene.primitives.remove(this._modelPrimitive);
+      this._modelPrimitive = null;
+    }
     const ring = this.viewer.entities.getById(`${this.config.id}-orbit-ring`);
     if (ring) this.viewer.entities.remove(ring);
     if (this.entity) {

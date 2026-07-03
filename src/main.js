@@ -93,7 +93,9 @@ async function main() {
     };
 
     registry.registerAll(DEFAULT_SATELLITES);
-    await registry.loadAllModels();
+    registry.loadAllModels().catch((err) => {
+      console.warn('Satellite model load:', err);
+    });
     onTimeChange();
 
     const timeControls = new TimeControls(simClock, { onChange: onTimeChange });
