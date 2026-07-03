@@ -7,6 +7,7 @@ const {
   EllipsoidTerrainProvider,
   OpenStreetMapImageryProvider,
   TileMapServiceImageryProvider,
+  createWorldImageryAsync,
   Color,
 } = Cesium;
 
@@ -47,6 +48,13 @@ export async function setupImagery(viewer) {
     await tryAdd('Natural Earth', () =>
       TileMapServiceImageryProvider.fromUrl(NATURAL_EARTH_URL),
     )
+  ) {
+    return;
+  }
+
+  if (
+    Ion.defaultAccessToken &&
+    (await tryAdd('Cesium Ion', () => createWorldImageryAsync()))
   ) {
     return;
   }

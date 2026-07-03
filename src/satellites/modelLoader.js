@@ -11,13 +11,17 @@ const DEFAULT_MAX_LOCAL_MB = 12;
  */
 const DEFAULT_ION_ASSET_IDS = [2524683, 265696, 96188];
 
-async function _localSizeMb(uri) {
+async function _localHead(uri) {
   try {
     const res = await fetch(uri, { method: 'HEAD' });
+    if (!res.ok) return { exists: false, sizeMb: null };
     const bytes = parseInt(res.headers.get('content-length') || '0', 10);
-    return bytes > 0 ? bytes / (1024 * 1024) : null;
+    return {
+      exists: true,
+      sizeMb: bytes > 0 ? bytes / (1024 * 1024) : 0,
+    };
   } catch {
-    return null;
+    return { exists: false, sizeMb: null };
   }
 }
 
@@ -47,11 +51,10 @@ export async function resolveSatelliteModelUri(modelConfig = {}) {
     forceIon = false,
   } = modelConfig;
 
-  const sizeMb = await _localSizeMb(localUri);
-  const localTooLarge =
-    sizeMb !== null && sizeMb > maxLocalSizeMb;
+  const { exists: localExists, sizeMb } = await _localHead(localUri);
+  const localTooLarge = localExists && sizeMb !== null && sizeMb > maxLocalSizeMb;
 
-  if (!forceIon && !localTooLarge && localUri) {
+  if (!forceIon && localExists && !localTooLarge && localUri) {
     console.info(
       `Satellite model: local ${localUri}${sizeMb ? ` (${sizeMb.toFixed(1)} MB)` : ''}`,
     );
