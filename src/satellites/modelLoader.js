@@ -4,71 +4,36 @@ const { Ion, IonResource } = Cesium;
 
 /** 本地 glb 超过此大小（MB）时改用 Ion 托管模型 */
 const DEFAULT_MAX_LOCAL_MB = 12;
-/** 小于此字节数视为“没有有效本地模型” */
-const MIN_LOCAL_BYTES = 100_000;
 
 /**
  * Ion 上常见的 glTF 模型（按优先级尝试；需有效 Ion Token）
  */
 const DEFAULT_ION_ASSET_IDS = [2524683, 265696, 96188];
 
-async function _localHead(uri) {
+async function _localSizeMb(uri) {
   try {
     const res = await fetch(uri, { method: 'HEAD' });
-    if (!res.ok) return { exists: false, sizeMb: null };
+    if (!res.ok) return null;
     const bytes = parseInt(res.headers.get('content-length') || '0', 10);
-    if (bytes < MIN_LOCAL_BYTES) return { exists: false, sizeMb: null };
-    return { exists: true, sizeMb: bytes / (1024 * 1024) };
+    return bytes > 0 ? bytes / (1024 * 1024) : null;
   } catch {
-    return { exists: false, sizeMb: null };
+    return null;
   }
 }
 
 async function _tryIonAsset(assetId) {
-  const token = Ion.defaultAccessToken;
-  if (!token) return null;
-
+  if (!Ion.defaultAccessToken) return null;
   try {
-    const res = await fetch(
-      `https://api.cesium.com/v1/assets/${assetId}/endpoint?access_token=${encodeURIComponent(token)}`,
-    );
-    if (!res.ok) {
-      throw new Error(`${res.status} ${await res.text()}`);
-    }
-    const data = await res.json();
-    if (!data?.url || !data?.accessToken) {
-      throw new Error('Invalid Ion endpoint response');
-    }
-    return `${data.url}?access_token=${data.accessToken}`;
+    return await IonResource.fromAssetId(assetId);
   } catch (err) {
     console.warn(`Ion asset ${assetId} unavailable:`, err?.message ?? err);
-    try {
-      const resource = await IonResource.fromAssetId(assetId);
-      if (typeof resource.getUrlComponent === 'function') {
-        return resource.getUrlComponent(true);
-      }
-      return String(resource);
-    } catch (fallbackErr) {
-      console.warn(`Ion asset ${assetId} fallback failed:`, fallbackErr?.message ?? fallbackErr);
-      return null;
-    }
+    return null;
   }
-}
-
-async function _resolveIon(ionAssetIds) {
-  for (const assetId of ionAssetIds) {
-    const url = await _tryIonAsset(assetId);
-    if (url) {
-      console.info(`Satellite model: Cesium Ion asset ${assetId}`);
-      return url;
-    }
-  }
-  return null;
 }
 
 /**
- * 解析卫星 glTF 资源：本地过大或不存在时使用 Ion
- * @returns {Promise<string|null>}
+ * 解析卫星 glTF 资源：本地过大或加载失败时回退 Ion
+ * @returns {Promise<string|import('cesium').Resource|null>}
  */
 export async function resolveSatelliteModelUri(modelConfig = {}) {
   const {
@@ -78,14 +43,10 @@ export async function resolveSatelliteModelUri(modelConfig = {}) {
     forceIon = false,
   } = modelConfig;
 
-  if (forceIon) {
-    return _resolveIon(ionAssetIds);
-  }
+  const sizeMb = await _localSizeMb(localUri);
+  const localTooLarge = sizeMb !== null && sizeMb > maxLocalSizeMb;
 
-  const { exists: localExists, sizeMb } = await _localHead(localUri);
-  const localTooLarge = localExists && sizeMb !== null && sizeMb > maxLocalSizeMb;
-
-  if (localExists && !localTooLarge && localUri) {
+  if (!forceIon && sizeMb !== null && !localTooLarge && localUri) {
     console.info(
       `Satellite model: local ${localUri}${sizeMb ? ` (${sizeMb.toFixed(1)} MB)` : ''}`,
     );
@@ -94,15 +55,20 @@ export async function resolveSatelliteModelUri(modelConfig = {}) {
 
   if (localTooLarge) {
     console.info(
-      `Local model ${sizeMb.toFixed(1)} MB > ${maxLocalSizeMb} MB, using Cesium Ion`,
+      `Local model ${sizeMb.toFixed(1)} MB > ${maxLocalSizeMb} MB, using Cesium Ion fallback`,
     );
   }
 
-  const ionUrl = await _resolveIon(ionAssetIds);
-  if (ionUrl) return ionUrl;
+  for (const assetId of ionAssetIds) {
+    const resource = await _tryIonAsset(assetId);
+    if (resource) {
+      console.info(`Satellite model: Cesium Ion asset ${assetId}`);
+      return resource;
+    }
+  }
 
-  if (localExists && localUri) {
-    console.warn('Ion unavailable, using local glb');
+  if (sizeMb !== null && localUri) {
+    console.warn('Ion models unavailable, falling back to local glb');
     return localUri;
   }
 
