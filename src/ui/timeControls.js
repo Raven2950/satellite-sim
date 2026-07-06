@@ -1,5 +1,4 @@
-import * as Cesium from 'cesium';
-import { formatUtcTime } from '../core/simClock.js';
+import { formatLocalTime, formatTimezoneBadge } from '../core/simClock.js';
 
 export class TimeControls {
   constructor(simClock, { onChange }) {
@@ -12,6 +11,7 @@ export class TimeControls {
     this.btnSpeed2 = document.getElementById('btnSpeed2');
     this.dateDisplay = document.getElementById('watchDate');
     this.timeDisplay = document.getElementById('watchTime');
+    this.badgeDisplay = document.getElementById('watchBadge');
 
     this._bindEvents();
     this.refresh();
@@ -44,9 +44,12 @@ export class TimeControls {
   }
 
   refresh() {
-    const { dateLabel, timeLabel } = formatUtcTime(this.simClock.currentTime);
+    const { dateLabel, timeLabel } = formatLocalTime(this.simClock.currentTime);
     this.dateDisplay.textContent = dateLabel;
     this.timeDisplay.textContent = timeLabel;
+    if (this.badgeDisplay) {
+      this.badgeDisplay.textContent = formatTimezoneBadge();
+    }
 
     this.btnLive.classList.toggle('active', this.simClock.live);
     this.btnPlay.classList.toggle('active', this.simClock.playing);

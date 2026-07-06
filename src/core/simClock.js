@@ -8,23 +8,44 @@ const MONTHS = [
   'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC',
 ];
 
-/** 格式化为 Wayfinder 风格：日期 + HH:mm:ss（无毫秒） */
-export function formatUtcTime(julianDate) {
-  const iso = JulianDate.toIso8601(julianDate);
-  const [date, rawTime] = iso.replace('Z', '').split('T');
-  const [y, m, d] = date.split('-');
-  const time = rawTime.split('.')[0];
-  const mon = MONTHS[Number(m) - 1];
+/** 格式化为 Wayfinder 风格：本机时区日期 + HH:mm:ss */
+export function formatLocalTime(julianDate) {
+  const d = JulianDate.toDate(julianDate);
+  const timeLabel = [
+    d.getHours(),
+    d.getMinutes(),
+    d.getSeconds(),
+  ]
+    .map((n) => String(n).padStart(2, '0'))
+    .join(':');
+  const mon = MONTHS[d.getMonth()];
+  const day = String(d.getDate()).padStart(2, '0');
+  const y = d.getFullYear();
   return {
-    dateLabel: `${mon} ${String(d).padStart(2, '0')} ${y}`,
-    timeLabel: time,
-    shortDate: `${mon} ${String(d).padStart(2, '0')}`,
-    timelineLabel: time,
+    dateLabel: `${mon} ${day} ${y}`,
+    timeLabel,
+    shortDate: `${mon} ${day}`,
+    timelineLabel: timeLabel,
   };
 }
 
+/** @deprecated 使用 formatLocalTime */
+export function formatUtcTime(julianDate) {
+  return formatLocalTime(julianDate);
+}
+
+export function formatTimezoneBadge() {
+  const offsetMin = -new Date().getTimezoneOffset();
+  const sign = offsetMin >= 0 ? '+' : '-';
+  const abs = Math.abs(offsetMin);
+  const h = Math.floor(abs / 60);
+  const m = abs % 60;
+  if (m === 0) return `UTC${sign}${h}`;
+  return `UTC${sign}${h}:${String(m).padStart(2, '0')}`;
+}
+
 export function formatTimelineTime(julianDate) {
-  return formatUtcTime(julianDate).timelineLabel;
+  return formatLocalTime(julianDate).timelineLabel;
 }
 
 export function getOrbitEpoch() {
