@@ -4,6 +4,7 @@ import {
   chainsToStripInstances,
 } from './geometry.js';
 import { swathColorForAge, fadeColorBucket, secondsToDays } from './fade.js';
+import { SWATH_SAMPLE_INTERVAL_M } from '../config/satellite.js';
 
 const {
   JulianDate,
@@ -19,9 +20,9 @@ const {
 const FADE_CHECK_INTERVAL_MS = 1500;
 
 /**
- * 每圈绘制完整 ground track 大圆轨迹（极区汇聚）
- * 当前圈：Entity.corridor 每帧延伸（无 destroy 闪烁）
- * 已完成圈：GroundPrimitive + 按天褪色
+ * 每圈 ground track 条带
+ * - 当前圈：已固化段 GroundPrimitive（按距离采样）+ 星下点尖端 corridor（每帧）
+ * - 已完成圈：GroundPrimitive + 按天褪色（低频重建，不闪）
  */
 export class SwathManager {
   constructor(viewer, orbitConfig, sensorConfig, fadeConfig, orbitEpoch) {
@@ -35,8 +36,9 @@ export class SwathManager {
     this.swathWidthM = sensorConfig.swathWidthKm * 1000;
 
     this.completedPasses = [];
-    this.activeEntities = [];
-    this.activeChains = [];
+    this._activeAnchors = [];
+    this._activeFrozenPrimitive = null;
+    this._activeTipEntity = null;
     this.passStartTime = null;
     this._passStartSec = null;
     this._lastSec = null;
@@ -47,11 +49,11 @@ export class SwathManager {
   beginPass(currentTime, sec) {
     this.passStartTime = JulianDate.clone(currentTime, new JulianDate());
     this._passStartSec = sec;
-    this._clearActiveEntities();
-    this.activeChains = [];
+    this._clearActiveVisuals();
+    this._activeAnchors = [];
   }
 
-  /** 按轨道时间重采样当前圈 ground track（每帧实时延伸到星下点） */
+  /** 当前圈：每帧延伸星下点尖端，沿轨每 150 m 固化一段 */
   updateActivePass(currentTime, currentSec, orbitPeriodSec, currentGround) {
     if (this._passStartSec === null) {
       this.beginPass(currentTime, currentSec);
@@ -67,22 +69,83 @@ export class SwathManager {
       this.beginPass(currentTime, currentSec);
     }
 
-    this.activeChains = sampleGroundTrackPath(
-      this._passStartSec,
-      currentSec,
-      orbitPeriodSec,
-      this.orbitConfig,
-      this.sensorConfig,
-      this.ellipsoid,
-      this.orbitEpoch,
-    );
-    this.activeChains = _appendGroundTip(this.activeChains, currentGround);
+    if (currentGround) {
+      this._extendActiveAnchors(currentGround);
+      this._syncActiveTip(currentGround);
+    }
 
-    this._syncActiveCorridors(this.activeChains);
     this._lastSec = currentSec;
   }
 
-  /** 完成一圈：绘制整圈 ground track */
+  _extendActiveAnchors(currentGround) {
+    if (this._activeAnchors.length === 0) {
+      this._activeAnchors.push(Cartesian3.clone(currentGround));
+      return;
+    }
+
+    const last = this._activeAnchors[this._activeAnchors.length - 1];
+    if (Cartesian3.distance(last, currentGround) >= SWATH_SAMPLE_INTERVAL_M) {
+      this._activeAnchors.push(Cartesian3.clone(currentGround));
+      this._rebuildActiveFrozen();
+    }
+  }
+
+  _rebuildActiveFrozen() {
+    if (this._activeAnchors.length < 2) {
+      this._destroyPrimitive(this._activeFrozenPrimitive);
+      this._activeFrozenPrimitive = null;
+      return;
+    }
+
+    const chains = [
+      this._activeAnchors.map((p) => Cartesian3.clone(p)),
+    ];
+    const next = this._buildStripFromChains(chains, this._activeColor);
+    if (!next) return;
+
+    this.viewer.scene.groundPrimitives.add(next);
+    this._destroyPrimitive(this._activeFrozenPrimitive);
+    this._activeFrozenPrimitive = next;
+  }
+
+  _syncActiveTip(currentGround) {
+    const anchor =
+      this._activeAnchors.length > 0
+        ? this._activeAnchors[this._activeAnchors.length - 1]
+        : null;
+    if (!anchor) return;
+
+    if (Cartesian3.distance(anchor, currentGround) < 0.5) {
+      if (this._activeTipEntity) {
+        this._activeTipEntity.show = false;
+      }
+      return;
+    }
+
+    const positions = [
+      Cartesian3.clone(anchor),
+      Cartesian3.clone(currentGround),
+    ];
+
+    if (!this._activeTipEntity) {
+      this._activeTipEntity = this.viewer.entities.add({
+        show: true,
+        corridor: {
+          positions,
+          width: this.swathWidthM,
+          cornerType: CornerType.MITERED,
+          material: Color.clone(this._activeColor, new Color()),
+          height: 0,
+        },
+      });
+      return;
+    }
+
+    this._activeTipEntity.show = true;
+    this._activeTipEntity.corridor.positions = positions;
+  }
+
+  /** 完成一圈：高精度采样后写入已完成圈 */
   finalizePass(orbitPeriodSec) {
     if (this._passStartSec === null) return;
 
@@ -97,12 +160,12 @@ export class SwathManager {
       this.orbitEpoch,
     );
 
-    this._clearActiveEntities();
+    this._clearActiveVisuals();
+    this._activeAnchors = [];
 
     if (chains.length === 0) {
       this._passStartSec = null;
       this.passStartTime = null;
-      this.activeChains = [];
       return;
     }
 
@@ -118,44 +181,17 @@ export class SwathManager {
       });
     }
 
-    this.activeChains = [];
     this._passStartSec = null;
     this.passStartTime = null;
   }
 
-  _syncActiveCorridors(chains) {
-    const usable = chains.filter((c) => c.length >= 2);
-
-    for (let i = 0; i < usable.length; i++) {
-      const positions = usable[i].map((p) => Cartesian3.clone(p));
-      let entity = this.activeEntities[i];
-      if (!entity) {
-        entity = this.viewer.entities.add({
-          corridor: {
-            positions,
-            width: this.swathWidthM,
-            cornerType: CornerType.MITERED,
-            material: Color.clone(this._activeColor, new Color()),
-            height: 0,
-          },
-        });
-        this.activeEntities[i] = entity;
-      } else {
-        entity.corridor.positions = positions;
-      }
+  _clearActiveVisuals() {
+    this._destroyPrimitive(this._activeFrozenPrimitive);
+    this._activeFrozenPrimitive = null;
+    if (this._activeTipEntity) {
+      this.viewer.entities.remove(this._activeTipEntity);
+      this._activeTipEntity = null;
     }
-
-    while (this.activeEntities.length > usable.length) {
-      const extra = this.activeEntities.pop();
-      this.viewer.entities.remove(extra);
-    }
-  }
-
-  _clearActiveEntities() {
-    for (const entity of this.activeEntities) {
-      this.viewer.entities.remove(entity);
-    }
-    this.activeEntities = [];
   }
 
   _buildStripFromChains(chains, color) {
@@ -229,20 +265,20 @@ export class SwathManager {
   }
 
   resetSampling() {
-    this._clearActiveEntities();
-    this.activeChains = [];
+    this._clearActiveVisuals();
+    this._activeAnchors = [];
     this.passStartTime = null;
     this._passStartSec = null;
     this._lastSec = null;
   }
 
   clear() {
-    this._clearActiveEntities();
+    this._clearActiveVisuals();
     for (const pass of this.completedPasses) {
       this._destroyPrimitive(pass.primitive);
     }
     this.completedPasses = [];
-    this.activeChains = [];
+    this._activeAnchors = [];
     this.passStartTime = null;
     this._passStartSec = null;
     this._lastSec = null;
@@ -251,29 +287,7 @@ export class SwathManager {
 
   get count() {
     let n = this.completedPasses.length;
-    if (this.activeEntities.some((e) => e?.show !== false)) n += 1;
+    if (this._activeFrozenPrimitive || this._activeTipEntity?.show) n += 1;
     return n;
   }
-}
-
-function _appendGroundTip(chains, tip) {
-  if (!tip || chains.length === 0) return chains;
-
-  const out = chains.map((c) => c.map((p) => Cartesian3.clone(p)));
-  const last = out[out.length - 1];
-  const tipPt = Cartesian3.clone(tip);
-
-  if (last.length === 0) {
-    last.push(tipPt);
-    return out;
-  }
-
-  const prev = last[last.length - 1];
-  if (Cartesian3.distanceSquared(prev, tipPt) > 1) {
-    last.push(tipPt);
-  } else {
-    last[last.length - 1] = tipPt;
-  }
-
-  return out;
 }
