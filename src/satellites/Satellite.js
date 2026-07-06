@@ -146,12 +146,12 @@ export class Satellite {
       );
     }
 
-    this._updateSwath(currentTime, sec);
+    this._updateSwath(currentTime, sec, ground);
     this.swathManager.updateFade(currentTime);
     this.swathCount = this.swathManager.count;
   }
 
-  _updateSwath(currentTime, sec) {
+  _updateSwath(currentTime, sec, ground) {
     if (this._lastFrameSec !== null) {
       const frameAdv = sec - this._lastFrameSec;
       if (frameAdv < 0 || frameAdv > SWATH_SCRUB_RESET_SEC) {
@@ -164,6 +164,7 @@ export class Satellite {
       currentTime,
       sec,
       this.orbitPeriodSec,
+      ground,
     );
   }
 

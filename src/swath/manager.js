@@ -11,17 +11,17 @@ const {
   PerInstanceColorAppearance,
   ClassificationType,
   Cartesian3,
+  Color,
+  CornerType,
 } = Cesium;
-
-/** 当前圈条带重建最小间隔（占轨道周期比例，约每圈 12 次） */
-const ACTIVE_REBUILD_ORBIT_FRACTION = 1 / 12;
 
 /** 已完成条带褪色检查最小墙钟间隔（毫秒） */
 const FADE_CHECK_INTERVAL_MS = 1500;
 
 /**
  * 每圈绘制完整 ground track 大圆轨迹（极区汇聚）
- * 当前圈：从圈起点实时延伸到当前时刻
+ * 当前圈：Entity.corridor 每帧延伸（无 destroy 闪烁）
+ * 已完成圈：GroundPrimitive + 按天褪色
  */
 export class SwathManager {
   constructor(viewer, orbitConfig, sensorConfig, fadeConfig, orbitEpoch) {
@@ -32,28 +32,27 @@ export class SwathManager {
     this.orbitEpoch = orbitEpoch;
     this.ellipsoid = viewer.scene.globe.ellipsoid;
     this.halfWidthM = (sensorConfig.swathWidthKm * 1000) / 2;
+    this.swathWidthM = sensorConfig.swathWidthKm * 1000;
 
     this.completedPasses = [];
-    this.activePrimitive = null;
+    this.activeEntities = [];
     this.activeChains = [];
     this.passStartTime = null;
     this._passStartSec = null;
     this._lastSec = null;
-    this._lastActiveRebuildSec = null;
     this._lastFadeWallMs = 0;
+    this._activeColor = swathColorForAge(0, fadeConfig);
   }
 
   beginPass(currentTime, sec) {
     this.passStartTime = JulianDate.clone(currentTime, new JulianDate());
     this._passStartSec = sec;
-    this._destroyPrimitive(this.activePrimitive);
-    this.activePrimitive = null;
+    this._clearActiveEntities();
     this.activeChains = [];
-    this._lastActiveRebuildSec = null;
   }
 
-  /** 按轨道时间重采样当前圈 ground track（实时延伸） */
-  updateActivePass(currentTime, currentSec, orbitPeriodSec) {
+  /** 按轨道时间重采样当前圈 ground track（每帧实时延伸到星下点） */
+  updateActivePass(currentTime, currentSec, orbitPeriodSec, currentGround) {
     if (this._passStartSec === null) {
       this.beginPass(currentTime, currentSec);
     }
@@ -68,18 +67,6 @@ export class SwathManager {
       this.beginPass(currentTime, currentSec);
     }
 
-    const rebuildStep = orbitPeriodSec * ACTIVE_REBUILD_ORBIT_FRACTION;
-    const sinceRebuild =
-      this._lastActiveRebuildSec === null
-        ? Infinity
-        : currentSec - this._lastActiveRebuildSec;
-    const isFirstSample = this.activePrimitive === null;
-
-    if (!isFirstSample && sinceRebuild < rebuildStep) {
-      this._lastSec = currentSec;
-      return;
-    }
-
     this.activeChains = sampleGroundTrackPath(
       this._passStartSec,
       currentSec,
@@ -89,12 +76,9 @@ export class SwathManager {
       this.ellipsoid,
       this.orbitEpoch,
     );
+    this.activeChains = _appendGroundTip(this.activeChains, currentGround);
 
-    if (this.activeChains.some((c) => c.length >= 2)) {
-      this._rebuildActivePrimitive(swathColorForAge(0, this.fadeConfig));
-      this._lastActiveRebuildSec = currentSec;
-    }
-
+    this._syncActiveCorridors(this.activeChains);
     this._lastSec = currentSec;
   }
 
@@ -113,16 +97,14 @@ export class SwathManager {
       this.orbitEpoch,
     );
 
+    this._clearActiveEntities();
+
     if (chains.length === 0) {
-      this._destroyPrimitive(this.activePrimitive);
-      this.activePrimitive = null;
       this._passStartSec = null;
       this.passStartTime = null;
+      this.activeChains = [];
       return;
     }
-
-    this._destroyPrimitive(this.activePrimitive);
-    this.activePrimitive = null;
 
     const color = swathColorForAge(0, this.fadeConfig);
     const primitive = this._buildStripFromChains(chains, color);
@@ -139,15 +121,41 @@ export class SwathManager {
     this.activeChains = [];
     this._passStartSec = null;
     this.passStartTime = null;
-    this._lastActiveRebuildSec = null;
   }
 
-  _rebuildActivePrimitive(color) {
-    const next = this._buildStripFromChains(this.activeChains, color);
-    if (!next) return;
-    this.viewer.scene.groundPrimitives.add(next);
-    this._destroyPrimitive(this.activePrimitive);
-    this.activePrimitive = next;
+  _syncActiveCorridors(chains) {
+    const usable = chains.filter((c) => c.length >= 2);
+
+    for (let i = 0; i < usable.length; i++) {
+      const positions = usable[i].map((p) => Cartesian3.clone(p));
+      let entity = this.activeEntities[i];
+      if (!entity) {
+        entity = this.viewer.entities.add({
+          corridor: {
+            positions,
+            width: this.swathWidthM,
+            cornerType: CornerType.MITERED,
+            material: Color.clone(this._activeColor, new Color()),
+            height: 0,
+          },
+        });
+        this.activeEntities[i] = entity;
+      } else {
+        entity.corridor.positions = positions;
+      }
+    }
+
+    while (this.activeEntities.length > usable.length) {
+      const extra = this.activeEntities.pop();
+      this.viewer.entities.remove(extra);
+    }
+  }
+
+  _clearActiveEntities() {
+    for (const entity of this.activeEntities) {
+      this.viewer.entities.remove(entity);
+    }
+    this.activeEntities = [];
   }
 
   _buildStripFromChains(chains, color) {
@@ -221,18 +229,15 @@ export class SwathManager {
   }
 
   resetSampling() {
-    this._destroyPrimitive(this.activePrimitive);
-    this.activePrimitive = null;
+    this._clearActiveEntities();
     this.activeChains = [];
     this.passStartTime = null;
     this._passStartSec = null;
     this._lastSec = null;
-    this._lastActiveRebuildSec = null;
   }
 
   clear() {
-    this._destroyPrimitive(this.activePrimitive);
-    this.activePrimitive = null;
+    this._clearActiveEntities();
     for (const pass of this.completedPasses) {
       this._destroyPrimitive(pass.primitive);
     }
@@ -241,13 +246,34 @@ export class SwathManager {
     this.passStartTime = null;
     this._passStartSec = null;
     this._lastSec = null;
-    this._lastActiveRebuildSec = null;
     this._lastFadeWallMs = 0;
   }
 
   get count() {
     let n = this.completedPasses.length;
-    if (this.activeChains.some((c) => c.length >= 2)) n += 1;
+    if (this.activeEntities.some((e) => e?.show !== false)) n += 1;
     return n;
   }
+}
+
+function _appendGroundTip(chains, tip) {
+  if (!tip || chains.length === 0) return chains;
+
+  const out = chains.map((c) => c.map((p) => Cartesian3.clone(p)));
+  const last = out[out.length - 1];
+  const tipPt = Cartesian3.clone(tip);
+
+  if (last.length === 0) {
+    last.push(tipPt);
+    return out;
+  }
+
+  const prev = last[last.length - 1];
+  if (Cartesian3.distanceSquared(prev, tipPt) > 1) {
+    last.push(tipPt);
+  } else {
+    last[last.length - 1] = tipPt;
+  }
+
+  return out;
 }
