@@ -9,7 +9,7 @@ import { SimClock, getOrbitEpoch } from './core/simClock.js';
 import { TIME_CONTROL } from './config/satellite.js';
 import { DEFAULT_SATELLITES } from './config/satellite.js';
 import { SatelliteRegistry } from './satellites/registry.js';
-import { orbitalPeriodSeconds } from './orbit/propagate.js';
+import { orbitalPeriodSeconds, ensureIcrfReady } from './orbit/propagate.js';
 import { TimeControls } from './ui/timeControls.js';
 import './style.css';
 
@@ -83,6 +83,13 @@ async function main() {
     });
 
     const simClock = new SimClock(TIME_CONTROL.speed1, TIME_CONTROL.speed2);
+    if (loadingEl) loadingEl.textContent = '正在加载轨道数据…';
+    try {
+      await ensureIcrfReady(simClock.startTime, simClock.stopTime);
+    } catch (err) {
+      console.warn('ICRF preload failed, using Earth-rotation fallback:', err);
+    }
+
     const orbitEpoch = getOrbitEpoch();
     const registry = new SatelliteRegistry(viewer, orbitEpoch);
 

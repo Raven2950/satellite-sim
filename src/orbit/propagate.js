@@ -13,7 +13,10 @@ const {
   Transforms,
   Simon1994PlanetaryPositions,
   Math: CesiumMath,
+  TimeInterval,
 } = Cesium;
+
+const J2000 = JulianDate.fromIso8601('2000-01-01T12:00:00Z');
 
 const _scratchSun = new Cartesian3();
 const _scratchE1 = new Cartesian3();
@@ -117,11 +120,27 @@ export function computeEciPosition(julianDate, secondsSinceEpoch, orbitConfig, r
 
 /** ECI → ECEF（与 Cesium 太阳/晨昏线同一套 ICRF→Fixed 变换） */
 export function eciToEcef(julianDate, eciPosition, result) {
+  const out = result ?? new Cartesian3();
   const icrfToFixed = Transforms.computeIcrfToFixedMatrix(
     julianDate,
     _scratchIcrfToFixed,
   );
-  return Matrix3.multiplyByVector(icrfToFixed, eciPosition, result ?? new Cartesian3());
+  if (icrfToFixed) {
+    return Matrix3.multiplyByVector(icrfToFixed, eciPosition, out);
+  }
+  const sec = JulianDate.secondsDifference(julianDate, J2000);
+  return eciToEcefFromSeconds(sec, eciPosition, out);
+}
+
+/** 预加载 ICRF 数据，避免 computeIcrfToFixedMatrix 返回 undefined */
+export async function ensureIcrfReady(startJulian, stopJulian) {
+  const interval = new TimeInterval({
+    start: startJulian,
+    stop: stopJulian,
+    isStartIncluded: true,
+    isStopIncluded: true,
+  });
+  await Transforms.preloadIcrfFixed(interval);
 }
 
 /** @deprecated 旧接口：无仿真时刻时使用 epoch 秒差近似 */
