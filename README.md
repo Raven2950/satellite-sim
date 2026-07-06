@@ -4,16 +4,7 @@
 
 ## 在线演示
 
-部署成功后访问：**https://raven2950.github.io/satellite-sim/**
-
-## 快速开始（本地开发）
-
-```bash
-cp .env.example .env   # 填入 VITE_CESIUM_ION_TOKEN
-npm install
-npm run dev
-# 浏览器打开 http://localhost:5173/satellite-sim/
-```
+**https://raven2950.github.io/satellite-sim/**
 
 ## 时间控制（底部）
 
@@ -23,12 +14,6 @@ npm run dev
 | **▶ / ⏸** | 播放 / 暂停 |
 | **1×** | 倍速 1（600×） |
 | **2×** | 倍速 2（1000×） |
-
-## 核心设计
-
-- **轨道**：500 km 太阳同步圆轨道，周期 ~94.5 分钟
-- **地球**：贴图固定；星下点逐圈西漂（ECI→ECEF）
-- **条带**：60 km 宽，白色 → 灰色 → 消失（30 天）
 
 ## 修改参数
 
