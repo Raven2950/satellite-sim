@@ -45,8 +45,8 @@ export const DEFAULT_SATELLITES = [
       type: 'sun-sync',
       altitudeKm: 500,
       inclinationDeg: 97.4,
-      raanDeg: 280,
-      initialPhaseDeg: 145,
+      /** 沿晨昏轨道的初始相位（度）；RAAN 由当前太阳方向自动确定 */
+      initialPhaseDeg: 0,
     },
     sensor: {
       swathWidthKm: 60,

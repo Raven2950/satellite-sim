@@ -99,11 +99,15 @@ export function createViewer(containerId) {
   }
 
   viewer.scene.globe.show = true;
-  viewer.scene.globe.enableLighting = false;
+  viewer.scene.globe.enableLighting = true;
+  viewer.scene.globe.dynamicAtmosphereLighting = true;
+  viewer.scene.globe.dynamicAtmosphereLightingFromSun = true;
+  viewer.scene.globe.showGroundAtmosphere = true;
   viewer.scene.globe.baseColor = Color.fromCssColorString('#2a6a9a');
   viewer.scene.globe.depthTestAgainstTerrain = false;
   viewer.scene.fog.enabled = false;
   viewer.scene.backgroundColor = Color.fromCssColorString('#0a1020');
+  viewer.scene.moon.show = false;
 
   return viewer;
 }

@@ -18,11 +18,12 @@ const {
  * 当前圈：从圈起点实时延伸到当前时刻
  */
 export class SwathManager {
-  constructor(viewer, orbitConfig, sensorConfig, fadeConfig) {
+  constructor(viewer, orbitConfig, sensorConfig, fadeConfig, orbitEpoch) {
     this.viewer = viewer;
     this.orbitConfig = orbitConfig;
     this.sensorConfig = sensorConfig;
     this.fadeConfig = fadeConfig;
+    this.orbitEpoch = orbitEpoch;
     this.ellipsoid = viewer.scene.globe.ellipsoid;
     this.halfWidthM = (sensorConfig.swathWidthKm * 1000) / 2;
 
@@ -65,6 +66,7 @@ export class SwathManager {
       this.orbitConfig,
       this.sensorConfig,
       this.ellipsoid,
+      this.orbitEpoch,
     );
 
     this._rebuildActivePrimitive(swathColorForAge(0, this.fadeConfig));
@@ -83,6 +85,7 @@ export class SwathManager {
       this.orbitConfig,
       this.sensorConfig,
       this.ellipsoid,
+      this.orbitEpoch,
     );
 
     if (chains.length === 0) {

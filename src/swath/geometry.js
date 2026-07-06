@@ -1,7 +1,9 @@
 import * as Cesium from 'cesium';
 import { computeGroundCartesian } from '../orbit/propagate.js';
 
-const { Cartesian3 } = Cesium;
+const { Cartesian3, JulianDate } = Cesium;
+
+const _scratchJulian = new JulianDate();
 
 /**
  * 在两点之间生成 swathWidth 宽的地面扫描条带四边形
@@ -32,7 +34,6 @@ const DISCONTINUITY_M = 4_000_000;
 
 /**
  * 按轨道时间密集采样一整段 ground track（大圆地面轨迹）
- * 每圈固定 360 点，保证全球视角下过境线汇聚到极区
  */
 export function sampleGroundTrackPath(
   startSec,
@@ -41,6 +42,7 @@ export function sampleGroundTrackPath(
   orbitConfig,
   sensorConfig,
   ellipsoid,
+  orbitEpoch,
   samplesPerOrbit = 360,
 ) {
   if (endSec < startSec) return [];
@@ -51,8 +53,19 @@ export function sampleGroundTrackPath(
   const points = [];
   for (let t = startSec; t <= effectiveEnd + stepSec * 0.01; t += stepSec) {
     const sampleT = Math.min(t, effectiveEnd);
+    const sampleJulian = JulianDate.addSeconds(
+      orbitEpoch,
+      sampleT,
+      _scratchJulian,
+    );
     points.push(
-      computeGroundCartesian(sampleT, orbitConfig, sensorConfig, ellipsoid),
+      computeGroundCartesian(
+        sampleJulian,
+        sampleT,
+        orbitConfig,
+        sensorConfig,
+        ellipsoid,
+      ),
     );
     if (sampleT >= effectiveEnd) break;
   }
@@ -80,7 +93,7 @@ function _splitAtDiscontinuities(points) {
   return chains;
 }
 
-/** 将多段 ground chain 合并为条带 primitive 所需点列（段间插入 NaN 分隔不可行，分段分别建） */
+/** 将多段 ground chain 合并为条带 primitive 所需点列 */
 export function chainsToStripInstances(chains, halfWidthM, ellipsoid, color) {
   const {
     GeometryInstance,

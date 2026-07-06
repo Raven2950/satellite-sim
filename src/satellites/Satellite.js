@@ -26,6 +26,7 @@ export class Satellite {
       config.orbit,
       config.sensor,
       config.fade,
+      orbitEpoch,
     );
 
     this._lastFrameSec = null;
@@ -50,10 +51,15 @@ export class Satellite {
   }
 
   _buildOrbitRing() {
+    const sec = 0;
     this.orbitRingEntity = this.viewer.entities.add({
       id: `${this.config.id}-orbit-ring`,
       polyline: {
-        positions: buildOrbitRingPositions(this.config.orbit, 0),
+        positions: buildOrbitRingPositions(
+          this.orbitEpoch,
+          this.config.orbit,
+          sec,
+        ),
         width: 1.5,
         material: Cesium.Color.CYAN.withAlpha(0.45),
         arcType: Cesium.ArcType.NONE,
@@ -66,11 +72,12 @@ export class Satellite {
     const pointColor = Cesium.Color.fromCssColorString(
       appearance?.pointColor ?? '#00FFFF',
     );
+    const sec = 0;
 
     this.entity = this.viewer.entities.add({
       id,
       name,
-      position: computeEcefPosition(0, this.config.orbit),
+      position: computeEcefPosition(this.orbitEpoch, sec, this.config.orbit),
       point: {
         pixelSize: appearance?.pointSize ?? 14,
         color: pointColor,
@@ -110,9 +117,10 @@ export class Satellite {
 
   update(currentTime) {
     const sec = this._secondsSinceEpoch(currentTime);
-    const pos = computeEcefPosition(sec, this.config.orbit);
-    const vel = computeEcefVelocity(sec, this.config.orbit);
+    const pos = computeEcefPosition(currentTime, sec, this.config.orbit);
+    const vel = computeEcefVelocity(currentTime, sec, this.config.orbit);
     const ground = computeGroundCartesian(
+      currentTime,
       sec,
       this.config.orbit,
       this.config.sensor,
@@ -132,6 +140,7 @@ export class Satellite {
 
     if (this.orbitRingEntity?.polyline) {
       this.orbitRingEntity.polyline.positions = buildOrbitRingPositions(
+        currentTime,
         this.config.orbit,
         sec,
       );
