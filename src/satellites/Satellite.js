@@ -29,6 +29,7 @@ export class Satellite {
       config.fade,
       orbitEpoch,
     );
+    this.swathManager.setCoveragePlanner(this.coveragePlanner);
 
     this._lastFrameSec = null;
     this.swathCount = 0;
@@ -115,8 +116,8 @@ export class Satellite {
       this.ellipsoid,
     );
 
-    // 覆盖规划（偏转）仅更新栅格/HUD，不影响卫星模型与绿色视场锥
-    this.coveragePlanner.planImaging(
+    // 覆盖规划（偏转）更新栅格/HUD；偏转地面点仅用于白色条带
+    const imaging = this.coveragePlanner.planImaging(
       currentTime,
       sec,
       nadirGround,
@@ -145,7 +146,8 @@ export class Satellite {
       currentTime,
       sec,
       this.orbitPeriodSec,
-      nadirGround,
+      imaging.nadirGround,
+      imaging.rollGround,
     );
     this.swathManager.updateFade(currentTime);
     this.swathCount = this.swathManager.count;
@@ -162,39 +164,18 @@ export class Satellite {
     const orbitCount = Math.floor(targetSimSec / orbitPeriodSec);
     if (orbitCount <= 0) return;
 
-    const coverageStep = orbitPeriodSec / 12;
     const scratch = new JulianDate();
 
     for (let i = 0; i < orbitCount; i++) {
       const passStartSec = initialSec + i * orbitPeriodSec;
       const simElapsed = i * orbitPeriodSec;
       const passStartTime = JulianDate.addSeconds(anchor, simElapsed, scratch);
-      const endSec = passStartSec + orbitPeriodSec;
-
-      for (let t = passStartSec; t <= endSec; t += coverageStep) {
-        const sec = Math.min(t, endSec);
-        const jd = JulianDate.addSeconds(this.orbitEpoch, sec, scratch);
-        const vel = computeEcefVelocity(jd, sec, this.config.orbit);
-        const nadirGround = computeGroundCartesian(
-          jd,
-          sec,
-          this.config.orbit,
-          { ...this.config.sensor, rollDeg: 0 },
-          this.ellipsoid,
-        );
-        this.coveragePlanner.planImaging(
-          jd,
-          sec,
-          nadirGround,
-          vel,
-          this.ellipsoid,
-        );
-      }
 
       this.swathManager.simulateOrbitPass(
         passStartSec,
         orbitPeriodSec,
         passStartTime,
+        this.coveragePlanner,
       );
 
       if (i % 15 === 0) {

@@ -1,5 +1,8 @@
 import * as Cesium from 'cesium';
-import { computeGroundCartesian } from '../orbit/propagate.js';
+import {
+  computeGroundCartesian,
+  computeEcefVelocity,
+} from '../orbit/propagate.js';
 
 const { Cartesian3, JulianDate } = Cesium;
 
@@ -91,6 +94,66 @@ function _splitAtDiscontinuities(points) {
   }
   if (chain.length >= 2) chains.push(chain);
   return chains;
+}
+
+/**
+ * 采样一整圈成像轨迹（对地 + 缺口补扫偏转），返回可绘制条带链
+ * @param {boolean} [options.markGrid=true] true 时写入覆盖栅格（跳转离线）；false 仅几何（finalize 重采样）
+ */
+export function sampleOrbitSwathChains(
+  passStartSec,
+  orbitPeriodSec,
+  orbitConfig,
+  sensorConfig,
+  coveragePlanner,
+  ellipsoid,
+  orbitEpoch,
+  { samplesPerOrbit = 360, markGrid = true } = {},
+) {
+  const nadirSensor = { ...sensorConfig, rollDeg: 0 };
+  const stepSec = orbitPeriodSec / samplesPerOrbit;
+  const endSec = passStartSec + orbitPeriodSec;
+  const nadirPoints = [];
+  const rollPoints = [];
+
+  for (let t = passStartSec; t <= endSec + stepSec * 0.01; t += stepSec) {
+    const sec = Math.min(t, endSec);
+    const jd = JulianDate.addSeconds(orbitEpoch, sec, _scratchJulian);
+    const vel = computeEcefVelocity(jd, sec, orbitConfig);
+    const nadir = computeGroundCartesian(
+      jd,
+      sec,
+      orbitConfig,
+      nadirSensor,
+      ellipsoid,
+    );
+
+    let rollGround = null;
+    if (markGrid) {
+      const plan = coveragePlanner.planImaging(jd, sec, nadir, vel, ellipsoid);
+      rollGround = plan.rollGround;
+    } else {
+      const sample = coveragePlanner.sampleSwathPoints(
+        jd,
+        sec,
+        nadir,
+        vel,
+        ellipsoid,
+      );
+      rollGround = sample.rollGround;
+    }
+
+    nadirPoints.push(nadir);
+    if (rollGround) {
+      rollPoints.push(rollGround);
+    }
+    if (sec >= endSec) break;
+  }
+
+  return [
+    ..._splitAtDiscontinuities(nadirPoints),
+    ..._splitAtDiscontinuities(rollPoints),
+  ];
 }
 
 /** 将多段 ground chain 合并为条带 primitive 所需点列 */

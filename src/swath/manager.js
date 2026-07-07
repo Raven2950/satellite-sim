@@ -1,6 +1,7 @@
 import * as Cesium from 'cesium';
 import {
   sampleGroundTrackPath,
+  sampleOrbitSwathChains,
   chainsToStripInstances,
 } from './geometry.js';
 import { swathColorForAge, fadeColorBucket, secondsToDays } from './fade.js';
@@ -36,10 +37,12 @@ export class SwathManager {
     this._pendingPasses = [];
     this.activePrimitive = null;
     this._activePoints = [];
+    this._activeRollPoints = [];
     this.passStartTime = null;
     this._passStartSec = null;
     this._lastSec = null;
     this._lastFadeWallMs = 0;
+    this._coveragePlanner = null;
     this._activeColor = swathColorForAge(0, fadeConfig);
   }
 
@@ -49,10 +52,17 @@ export class SwathManager {
     this._destroyPrimitive(this.activePrimitive);
     this.activePrimitive = null;
     this._activePoints = [];
+    this._activeRollPoints = [];
   }
 
-  /** 当前圈：每帧延伸到星下点 */
-  updateActivePass(currentTime, currentSec, orbitPeriodSec, currentGround) {
+  /** 当前圈：每帧延伸到星下点（含偏转补扫轨迹） */
+  updateActivePass(
+    currentTime,
+    currentSec,
+    orbitPeriodSec,
+    nadirGround,
+    rollGround = null,
+  ) {
     if (this._passStartSec === null) {
       this.beginPass(currentTime, currentSec);
     }
@@ -63,41 +73,55 @@ export class SwathManager {
     }
 
     if (currentSec - this._passStartSec >= orbitPeriodSec * 0.995) {
-      this.finalizePass(orbitPeriodSec);
+      this.finalizePass(orbitPeriodSec, this._coveragePlanner);
       this.beginPass(currentTime, currentSec);
     }
 
-    if (currentGround) {
-      this._advanceActivePoints(currentGround);
-      if (this._activePoints.length >= 2) {
-        const chains = [this._activePoints.map((p) => Cartesian3.clone(p))];
-        this._rebuildActivePrimitive(chains);
-      }
+    if (nadirGround) {
+      this._advanceActivePoints(nadirGround, this._activePoints);
+    }
+    if (rollGround) {
+      this._advanceActivePoints(rollGround, this._activeRollPoints);
+    }
+
+    const chains = [];
+    if (this._activePoints.length >= 2) {
+      chains.push(this._activePoints.map((p) => Cartesian3.clone(p)));
+    }
+    if (this._activeRollPoints.length >= 2) {
+      chains.push(this._activeRollPoints.map((p) => Cartesian3.clone(p)));
+    }
+    if (chains.length > 0) {
+      this._rebuildActivePrimitive(chains);
     }
 
     this._lastSec = currentSec;
   }
 
-  _advanceActivePoints(currentGround) {
-    if (this._activePoints.length === 0) {
-      this._activePoints.push(Cartesian3.clone(currentGround));
+  setCoveragePlanner(coveragePlanner) {
+    this._coveragePlanner = coveragePlanner;
+  }
+
+  _advanceActivePoints(currentGround, points) {
+    if (points.length === 0) {
+      points.push(Cartesian3.clone(currentGround));
       return;
     }
 
-    if (this._activePoints.length === 1) {
-      const start = this._activePoints[0];
+    if (points.length === 1) {
+      const start = points[0];
       if (Cartesian3.distanceSquared(start, currentGround) > 0.01) {
-        this._activePoints.push(Cartesian3.clone(currentGround));
+        points.push(Cartesian3.clone(currentGround));
       }
       return;
     }
 
-    const tipIdx = this._activePoints.length - 1;
-    const prev = this._activePoints[tipIdx - 1];
-    this._activePoints[tipIdx] = Cartesian3.clone(currentGround);
+    const tipIdx = points.length - 1;
+    const prev = points[tipIdx - 1];
+    points[tipIdx] = Cartesian3.clone(currentGround);
 
     if (Cartesian3.distance(prev, currentGround) >= SWATH_SAMPLE_INTERVAL_M) {
-      this._activePoints.push(Cartesian3.clone(currentGround));
+      points.push(Cartesian3.clone(currentGround));
     }
   }
 
@@ -109,18 +133,17 @@ export class SwathManager {
     this.activePrimitive = next;
   }
 
-  /** 离线快进：采样一整圈轨迹，暂存链式点列（不创建 GPU 条带） */
-  simulateOrbitPass(passStartSec, orbitPeriodSec, passStartTime) {
-    const endSec = passStartSec + orbitPeriodSec;
-    const nadirSensor = { ...this.sensorConfig, rollDeg: 0 };
-    const chains = sampleGroundTrackPath(
+  /** 离线快进：采样一整圈轨迹（对地 + 偏转），暂存链式点列 */
+  simulateOrbitPass(passStartSec, orbitPeriodSec, passStartTime, coveragePlanner) {
+    const chains = sampleOrbitSwathChains(
       passStartSec,
-      endSec,
       orbitPeriodSec,
       this.orbitConfig,
-      nadirSensor,
+      this.sensorConfig,
+      coveragePlanner,
       this.ellipsoid,
       this.orbitEpoch,
+      { markGrid: true },
     );
 
     if (chains.length === 0) return;
@@ -146,6 +169,8 @@ export class SwathManager {
       );
       const ageDays = secondsToDays(ageSec);
       const color = swathColorForAge(ageDays, this.fadeConfig);
+      if (color.alpha < 0.01) continue;
+
       const primitive = this._buildStripFromChains(pass.cachedChains, color);
       if (primitive) {
         this.viewer.scene.groundPrimitives.add(primitive);
@@ -165,24 +190,34 @@ export class SwathManager {
     onProgress?.(1);
   }
 
-  finalizePass(orbitPeriodSec) {
+  finalizePass(orbitPeriodSec, coveragePlanner) {
     if (this._passStartSec === null) return;
 
-    const endSec = this._passStartSec + orbitPeriodSec;
-    const nadirSensor = { ...this.sensorConfig, rollDeg: 0 };
-    const chains = sampleGroundTrackPath(
-      this._passStartSec,
-      endSec,
-      orbitPeriodSec,
-      this.orbitConfig,
-      nadirSensor,
-      this.ellipsoid,
-      this.orbitEpoch,
-    );
+    const chains = coveragePlanner
+      ? sampleOrbitSwathChains(
+          this._passStartSec,
+          orbitPeriodSec,
+          this.orbitConfig,
+          this.sensorConfig,
+          coveragePlanner,
+          this.ellipsoid,
+          this.orbitEpoch,
+          { markGrid: false },
+        )
+      : sampleGroundTrackPath(
+          this._passStartSec,
+          this._passStartSec + orbitPeriodSec,
+          orbitPeriodSec,
+          this.orbitConfig,
+          { ...this.sensorConfig, rollDeg: 0 },
+          this.ellipsoid,
+          this.orbitEpoch,
+        );
 
     this._destroyPrimitive(this.activePrimitive);
     this.activePrimitive = null;
     this._activePoints = [];
+    this._activeRollPoints = [];
 
     if (chains.length === 0) {
       this._passStartSec = null;
@@ -280,6 +315,7 @@ export class SwathManager {
     this._destroyPrimitive(this.activePrimitive);
     this.activePrimitive = null;
     this._activePoints = [];
+    this._activeRollPoints = [];
     this.passStartTime = null;
     this._passStartSec = null;
     this._lastSec = null;
@@ -294,6 +330,7 @@ export class SwathManager {
     }
     this.completedPasses = [];
     this._activePoints = [];
+    this._activeRollPoints = [];
     this.passStartTime = null;
     this._passStartSec = null;
     this._lastSec = null;

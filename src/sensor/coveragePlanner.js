@@ -164,6 +164,37 @@ export class CoveragePlanner {
   }
 
   /**
+   * 仅用于条带几何稠密重采样：不写入覆盖栅格，避免 finalize 重复标记
+   */
+  sampleSwathPoints(julianDate, secondsSinceEpoch, nadirGround, vel, ellipsoid) {
+    const rollPlan = this._findBestGapTarget(nadirGround, vel, ellipsoid);
+    this.lastGapFill = Boolean(rollPlan);
+    this.currentRollDeg = rollPlan?.rollDeg ?? 0;
+
+    let rollGround = null;
+    if (rollPlan) {
+      rollGround = computeGroundCartesian(
+        julianDate,
+        secondsSinceEpoch,
+        this.orbitConfig,
+        { ...this.sensorConfig, rollDeg: rollPlan.rollDeg },
+        ellipsoid,
+      );
+    }
+
+    this._prevNadir = Cartesian3.clone(
+      nadirGround,
+      this._prevNadir ?? new Cartesian3(),
+    );
+
+    return {
+      nadirGround,
+      rollGround,
+      rollDeg: this.currentRollDeg,
+    };
+  }
+
+  /**
    * 仅在「当前轨迹后方 + 条带外缘窄带 + 邻接已覆盖区」的未覆盖点中择优
    */
   _findBestGapTarget(nadirGround, vel, ellipsoid) {
