@@ -55,12 +55,13 @@ export function getOrbitEpoch() {
 /**
  * Wayfinder 风格模拟时钟
  * LIVE → 真实 UTC 1×
- * 播放 / 倍速1(600×) / 倍速2(8640×，30天≈5分钟)
+ * 播放 / 倍速1 / 倍速2；unbounded 时无停止上限
  */
 export class SimClock {
   constructor(speed1, speed2) {
     this.speed1 = speed1;
     this.speed2 = speed2;
+    this.unbounded = SIMULATION.unbounded !== false;
 
     const now = JulianDate.now();
     this.startTime = JulianDate.addDays(
@@ -70,7 +71,7 @@ export class SimClock {
     );
     this.stopTime = JulianDate.addDays(
       now,
-      SIMULATION.futureDays,
+      SIMULATION.icrfPreloadDays ?? 400,
       new JulianDate(),
     );
     this.currentTime = JulianDate.clone(now, new JulianDate());
@@ -87,7 +88,7 @@ export class SimClock {
     if (JulianDate.lessThan(time, this.startTime)) {
       return JulianDate.clone(this.startTime, this._scratch);
     }
-    if (JulianDate.greaterThan(time, this.stopTime)) {
+    if (!this.unbounded && JulianDate.greaterThan(time, this.stopTime)) {
       return JulianDate.clone(this.stopTime, this._scratch);
     }
     return JulianDate.clone(time, this._scratch);
@@ -126,6 +127,7 @@ export class SimClock {
       this.multiplier = this.speed1;
       this.activeSpeed = 'speed1';
       this._lastSpeed = 'speed1';
+      this.markSimAnchor();
       return;
     }
 
@@ -144,6 +146,7 @@ export class SimClock {
   }
 
   setSpeed1() {
+    if (this.live) this.markSimAnchor();
     this.live = false;
     this.playing = true;
     this.multiplier = this.speed1;
@@ -152,6 +155,7 @@ export class SimClock {
   }
 
   setSpeed2() {
+    if (this.live) this.markSimAnchor();
     this.live = false;
     this.playing = true;
     this.multiplier = this.speed2;
@@ -169,7 +173,6 @@ export class SimClock {
     JulianDate.addSeconds(this.startTime, sec, this.currentTime);
   }
 
-  /** 在局部时间轴窗口内 scrub（Wayfinder 风格） */
   scrubToWindowFraction(windowStart, windowSpanSec, fraction) {
     this.live = false;
     this.playing = false;
@@ -187,9 +190,24 @@ export class SimClock {
     return Math.max(0, Math.min(1, cur / span));
   }
 
+  /** 自仿真起点以来经过的仿真天数 */
+  getElapsedSimDays() {
+    const anchor = this._simAnchor ?? this.startTime;
+    const sec = JulianDate.secondsDifference(this.currentTime, anchor);
+    return Math.max(0, sec / 86400);
+  }
+
+  markSimAnchor() {
+    this._simAnchor = JulianDate.clone(this.currentTime, new JulianDate());
+  }
+
   syncToViewer(viewer) {
     viewer.clock.startTime = JulianDate.clone(this.startTime, new JulianDate());
-    viewer.clock.stopTime = JulianDate.clone(this.stopTime, new JulianDate());
+    const stop =
+      this.unbounded
+        ? JulianDate.addDays(this.currentTime, 1, new JulianDate())
+        : JulianDate.clone(this.stopTime, new JulianDate());
+    viewer.clock.stopTime = stop;
     viewer.clock.currentTime = JulianDate.clone(
       this.currentTime,
       new JulianDate(),

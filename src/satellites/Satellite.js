@@ -7,6 +7,7 @@ import {
   buildOrbitRingPositions,
   orbitalPeriodSeconds,
 } from '../orbit/propagate.js';
+import { CoveragePlanner } from '../sensor/coveragePlanner.js';
 import { SwathManager } from '../swath/manager.js';
 import { resolveSatelliteModelUri } from './modelLoader.js';
 import { SensorCone, computeNadirOrientation } from './sensorCone.js';
@@ -20,6 +21,8 @@ export class Satellite {
     this.orbitEpoch = orbitEpoch;
     this.ellipsoid = viewer.scene.globe.ellipsoid;
     this.orbitPeriodSec = orbitalPeriodSeconds(config.orbit.altitudeKm);
+
+    this.coveragePlanner = new CoveragePlanner(config.orbit, config.sensor);
 
     this.swathManager = new SwathManager(
       viewer,
@@ -119,24 +122,34 @@ export class Satellite {
     const sec = this._secondsSinceEpoch(currentTime);
     const pos = computeEcefPosition(currentTime, sec, this.config.orbit);
     const vel = computeEcefVelocity(currentTime, sec, this.config.orbit);
-    const ground = computeGroundCartesian(
+
+    const nadirGround = computeGroundCartesian(
       currentTime,
       sec,
       this.config.orbit,
-      this.config.sensor,
+      { ...this.config.sensor, rollDeg: 0 },
       this.ellipsoid,
     );
 
+    const imaging = this.coveragePlanner.planImaging(
+      currentTime,
+      sec,
+      nadirGround,
+      vel,
+      this.ellipsoid,
+    );
+
+    const footprintGround = imaging.rollGround ?? imaging.nadirGround;
     const modelCfg = this.config.appearance?.model ?? {};
 
     this.entity.position = pos;
     this.entity.orientation = computeNadirOrientation(pos, vel, this.ellipsoid, {
       pitch: modelCfg.pitchDeg ?? 0,
-      roll: modelCfg.rollDeg ?? 0,
+      roll: imaging.rollDeg + (modelCfg.rollDeg ?? 0),
       yaw: modelCfg.yawDeg ?? 0,
     });
 
-    this.sensorCone.update(pos, ground, vel);
+    this.sensorCone.update(pos, footprintGround, vel);
 
     if (this.orbitRingEntity?.polyline) {
       this.orbitRingEntity.polyline.positions = buildOrbitRingPositions(
@@ -146,16 +159,17 @@ export class Satellite {
       );
     }
 
-    this._updateSwath(currentTime, sec, ground);
+    this._updateSwath(currentTime, sec, imaging);
     this.swathManager.updateFade(currentTime);
     this.swathCount = this.swathManager.count;
   }
 
-  _updateSwath(currentTime, sec, ground) {
+  _updateSwath(currentTime, sec, imaging) {
     if (this._lastFrameSec !== null) {
       const frameAdv = sec - this._lastFrameSec;
       if (frameAdv < 0 || frameAdv > SWATH_SCRUB_RESET_SEC) {
         this.swathManager.resetSampling();
+        this.coveragePlanner.reset();
       }
     }
     this._lastFrameSec = sec;
@@ -164,8 +178,16 @@ export class Satellite {
       currentTime,
       sec,
       this.orbitPeriodSec,
-      ground,
+      imaging,
     );
+  }
+
+  get coverageCellCount() {
+    return this.coveragePlanner.grid.coveredCellCount;
+  }
+
+  get currentRollDeg() {
+    return this.coveragePlanner.currentRollDeg;
   }
 
   destroy() {
@@ -177,6 +199,7 @@ export class Satellite {
     }
     this.sensorCone?.destroy();
     this.swathManager.clear();
+    this.coveragePlanner.reset();
     this._lastFrameSec = null;
     this.swathCount = 0;
   }

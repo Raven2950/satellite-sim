@@ -11,10 +11,12 @@ export const SIDEREAL_DAY_SEC = 86164.0905;
 /** 轨道参考历元（惯性系轨道相位起点） */
 export const ORBIT_EPOCH_ISO = '2024-01-01T00:00:00Z';
 
-/** 时间轴可视窗口：当前时刻 ±30 天 */
+/** 仿真时间：仅限制最早时刻，向前播放无上限 */
 export const SIMULATION = {
-  historyDays: 30,
-  futureDays: 30,
+  historyDays: 7,
+  unbounded: true,
+  /** ICRF 预加载未来天数（长程仿真） */
+  icrfPreloadDays: 400,
 };
 
 /**
@@ -49,12 +51,14 @@ export const DEFAULT_SATELLITES = [
       initialPhaseDeg: 0,
     },
     sensor: {
+      /** 传感器视场地面幅宽（km） */
       swathWidthKm: 60,
       maxRollDeg: 30,
       rollDeg: 0,
+      coverageCellDeg: 0.05,
     },
     fade: {
-      cycleDays: 30,
+      cycleDays: 120,
       freshDays: 1,
     },
     appearance: {

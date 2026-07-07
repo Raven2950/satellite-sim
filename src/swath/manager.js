@@ -1,8 +1,5 @@
 import * as Cesium from 'cesium';
-import {
-  sampleGroundTrackPath,
-  chainsToStripInstances,
-} from './geometry.js';
+import { chainsToStripInstances } from './geometry.js';
 import { swathColorForAge, fadeColorBucket, secondsToDays } from './fade.js';
 import { SWATH_SAMPLE_INTERVAL_M } from '../config/satellite.js';
 
@@ -18,9 +15,7 @@ const {
 const FADE_CHECK_INTERVAL_MS = 1500;
 
 /**
- * 每圈 ground track 条带
- * - 当前圈：每帧 GroundPrimitive 重建（实时跟随星下点）
- * - 已完成圈：按天褪色 + 节流（避免历史轨迹闪烁）
+ * 每圈 ground track 条带（对地 + 按需偏转补扫）
  */
 export class SwathManager {
   constructor(viewer, orbitConfig, sensorConfig, fadeConfig, orbitEpoch) {
@@ -34,7 +29,8 @@ export class SwathManager {
 
     this.completedPasses = [];
     this.activePrimitive = null;
-    this._activePoints = [];
+    this._activeNadirPoints = [];
+    this._activeRollPoints = [];
     this.passStartTime = null;
     this._passStartSec = null;
     this._lastSec = null;
@@ -47,11 +43,14 @@ export class SwathManager {
     this._passStartSec = sec;
     this._destroyPrimitive(this.activePrimitive);
     this.activePrimitive = null;
-    this._activePoints = [];
+    this._activeNadirPoints = [];
+    this._activeRollPoints = [];
   }
 
-  /** 当前圈：每帧延伸到星下点 */
-  updateActivePass(currentTime, currentSec, orbitPeriodSec, currentGround) {
+  /**
+   * @param {{ nadirGround: Cartesian3, rollGround?: Cartesian3|null }} imaging
+   */
+  updateActivePass(currentTime, currentSec, orbitPeriodSec, imaging) {
     if (this._passStartSec === null) {
       this.beginPass(currentTime, currentSec);
     }
@@ -62,49 +61,59 @@ export class SwathManager {
     }
 
     if (currentSec - this._passStartSec >= orbitPeriodSec * 0.995) {
-      this.finalizePass(orbitPeriodSec);
+      this.finalizePass();
       this.beginPass(currentTime, currentSec);
     }
 
-    if (currentGround) {
-      this._advanceActivePoints(currentGround);
-      if (this._activePoints.length >= 2) {
-        const chains = [this._activePoints.map((p) => Cartesian3.clone(p))];
-        this._rebuildActivePrimitive(chains);
+    if (imaging?.nadirGround) {
+      this._advanceActivePoints(this._activeNadirPoints, imaging.nadirGround);
+      if (imaging.rollGround) {
+        this._advanceActivePoints(this._activeRollPoints, imaging.rollGround);
       }
+      this._rebuildActiveFromPoints();
     }
 
     this._lastSec = currentSec;
   }
 
-  /**
-   * 每帧更新路径：末端始终贴在星下点，沿轨每 150 m 固化一个锚点
-   */
-  _advanceActivePoints(currentGround) {
-    if (this._activePoints.length === 0) {
-      this._activePoints.push(Cartesian3.clone(currentGround));
+  _advanceActivePoints(points, ground) {
+    if (points.length === 0) {
+      points.push(Cartesian3.clone(ground));
       return;
     }
 
-    if (this._activePoints.length === 1) {
-      const start = this._activePoints[0];
-      if (Cartesian3.distanceSquared(start, currentGround) > 0.01) {
-        this._activePoints.push(Cartesian3.clone(currentGround));
+    if (points.length === 1) {
+      const start = points[0];
+      if (Cartesian3.distanceSquared(start, ground) > 0.01) {
+        points.push(Cartesian3.clone(ground));
       }
       return;
     }
 
-    const tipIdx = this._activePoints.length - 1;
-    const prev = this._activePoints[tipIdx - 1];
+    const tipIdx = points.length - 1;
+    const prev = points[tipIdx - 1];
+    points[tipIdx] = Cartesian3.clone(ground);
 
-    this._activePoints[tipIdx] = Cartesian3.clone(currentGround);
-
-    if (Cartesian3.distance(prev, currentGround) >= SWATH_SAMPLE_INTERVAL_M) {
-      this._activePoints.push(Cartesian3.clone(currentGround));
+    if (Cartesian3.distance(prev, ground) >= SWATH_SAMPLE_INTERVAL_M) {
+      points.push(Cartesian3.clone(ground));
     }
   }
 
-  _rebuildActivePrimitive(chains) {
+  _buildActiveChains() {
+    const chains = [];
+    if (this._activeNadirPoints.length >= 2) {
+      chains.push(this._activeNadirPoints.map((p) => Cartesian3.clone(p)));
+    }
+    if (this._activeRollPoints.length >= 2) {
+      chains.push(this._activeRollPoints.map((p) => Cartesian3.clone(p)));
+    }
+    return chains;
+  }
+
+  _rebuildActiveFromPoints() {
+    const chains = this._buildActiveChains();
+    if (chains.length === 0) return;
+
     const next = this._buildStripFromChains(chains, this._activeColor);
     if (!next) return;
     this.viewer.scene.groundPrimitives.add(next);
@@ -112,23 +121,15 @@ export class SwathManager {
     this.activePrimitive = next;
   }
 
-  finalizePass(orbitPeriodSec) {
+  finalizePass() {
     if (this._passStartSec === null) return;
 
-    const endSec = this._passStartSec + orbitPeriodSec;
-    const chains = sampleGroundTrackPath(
-      this._passStartSec,
-      endSec,
-      orbitPeriodSec,
-      this.orbitConfig,
-      this.sensorConfig,
-      this.ellipsoid,
-      this.orbitEpoch,
-    );
+    const chains = this._buildActiveChains();
 
     this._destroyPrimitive(this.activePrimitive);
     this.activePrimitive = null;
-    this._activePoints = [];
+    this._activeNadirPoints = [];
+    this._activeRollPoints = [];
 
     if (chains.length === 0) {
       this._passStartSec = null;
@@ -225,7 +226,8 @@ export class SwathManager {
   resetSampling() {
     this._destroyPrimitive(this.activePrimitive);
     this.activePrimitive = null;
-    this._activePoints = [];
+    this._activeNadirPoints = [];
+    this._activeRollPoints = [];
     this.passStartTime = null;
     this._passStartSec = null;
     this._lastSec = null;
@@ -238,7 +240,8 @@ export class SwathManager {
       this._destroyPrimitive(pass.primitive);
     }
     this.completedPasses = [];
-    this._activePoints = [];
+    this._activeNadirPoints = [];
+    this._activeRollPoints = [];
     this.passStartTime = null;
     this._passStartSec = null;
     this._lastSec = null;

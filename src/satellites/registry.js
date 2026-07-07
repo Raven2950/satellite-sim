@@ -48,6 +48,16 @@ export class SatelliteRegistry {
     return n;
   }
 
+  getCoverageStats() {
+    let cells = 0;
+    let rollDeg = 0;
+    for (const sat of this.satellites.values()) {
+      cells += sat.coverageCellCount;
+      rollDeg = sat.currentRollDeg;
+    }
+    return { cells, rollDeg };
+  }
+
   destroyAll() {
     for (const id of [...this.satellites.keys()]) {
       this.unregister(id);
