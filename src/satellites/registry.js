@@ -1,5 +1,4 @@
 import * as Cesium from 'cesium';
-import { orbitalPeriodSeconds } from '../orbit/propagate.js';
 import { Satellite } from './Satellite.js';
 
 const { JulianDate } = Cesium;
@@ -83,44 +82,38 @@ export class SatelliteRegistry {
   }
 
   /**
-   * 离线快进到仿真第 targetDays 天（复用 Satellite.update，不改算法）
+   * 离线快进到仿真第 targetDays 天（按圈采样，结束时一次性刷新场景）
    */
   async simulateToSimDays(targetDays, simClock, { onProgress } = {}) {
     const days = Math.max(0, targetDays);
     const anchor = simClock.getSimAnchor();
     const totalSec = days * 86400;
+    const scratch = new JulianDate();
 
     this._resetSimulationState();
 
     if (totalSec <= 0) {
       simClock.jumpToSimDays(0);
+      const resetTime = JulianDate.clone(anchor, scratch);
+      this.updateAll(resetTime);
       onProgress?.(1);
       return;
     }
 
-    const firstSat = this.satellites.values().next().value;
-    const orbitPeriodSec = firstSat
-      ? firstSat.orbitPeriodSec
-      : orbitalPeriodSeconds(500);
-    const stepSec = Math.max(orbitPeriodSec / 12, 30);
-
-    const scratch = new JulianDate();
-    let lastYieldSec = -Infinity;
-
-    for (let sec = 0; sec <= totalSec; sec += stepSec) {
-      const t = JulianDate.addSeconds(anchor, sec, scratch);
-      this.updateAll(t);
-
-      if (sec - lastYieldSec >= orbitPeriodSec * 2) {
-        onProgress?.(Math.min(1, sec / totalSec));
-        lastYieldSec = sec;
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      }
+    const satellites = [...this.satellites.values()];
+    for (let i = 0; i < satellites.length; i++) {
+      const sat = satellites[i];
+      await sat.simulateToSec(anchor, totalSec, {
+        onProgress: (fraction) => {
+          const overall = (i + fraction) / satellites.length;
+          onProgress?.(overall * 0.95);
+        },
+      });
     }
 
     const finalT = JulianDate.addSeconds(anchor, totalSec, scratch);
-    this.updateAll(finalT);
     simClock.jumpToSimDays(days);
+    this.updateAll(finalT);
     onProgress?.(1);
   }
 }

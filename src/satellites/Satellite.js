@@ -151,6 +151,75 @@ export class Satellite {
     this.swathCount = this.swathManager.count;
   }
 
+  /**
+   * 离线快进到 anchor 起第 targetSimSec 秒（按整圈推进，不触发实时渲染）
+   */
+  async simulateToSec(anchor, targetSimSec, { onProgress } = {}) {
+    if (targetSimSec <= 0) return;
+
+    const initialSec = this._secondsSinceEpoch(anchor);
+    const orbitPeriodSec = this.orbitPeriodSec;
+    const orbitCount = Math.floor(targetSimSec / orbitPeriodSec);
+    if (orbitCount <= 0) return;
+
+    const coverageStep = orbitPeriodSec / 12;
+    const scratch = new JulianDate();
+
+    for (let i = 0; i < orbitCount; i++) {
+      const passStartSec = initialSec + i * orbitPeriodSec;
+      const simElapsed = i * orbitPeriodSec;
+      const passStartTime = JulianDate.addSeconds(anchor, simElapsed, scratch);
+      const endSec = passStartSec + orbitPeriodSec;
+
+      for (let t = passStartSec; t <= endSec; t += coverageStep) {
+        const sec = Math.min(t, endSec);
+        const jd = JulianDate.addSeconds(this.orbitEpoch, sec, scratch);
+        const vel = computeEcefVelocity(jd, sec, this.config.orbit);
+        const nadirGround = computeGroundCartesian(
+          jd,
+          sec,
+          this.config.orbit,
+          { ...this.config.sensor, rollDeg: 0 },
+          this.ellipsoid,
+        );
+        this.coveragePlanner.planImaging(
+          jd,
+          sec,
+          nadirGround,
+          vel,
+          this.ellipsoid,
+        );
+      }
+
+      this.swathManager.simulateOrbitPass(
+        passStartSec,
+        orbitPeriodSec,
+        passStartTime,
+      );
+
+      if (i % 15 === 0) {
+        onProgress?.(i / orbitCount);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    }
+
+    const finalTime = JulianDate.addSeconds(anchor, targetSimSec, scratch);
+    await this.swathManager.flushPendingPasses(finalTime, {
+      onProgress: (fraction) => onProgress?.(0.9 + fraction * 0.1),
+    });
+
+    const nextPassStartSec = initialSec + orbitCount * orbitPeriodSec;
+    this.swathManager._passStartSec = nextPassStartSec;
+    this.swathManager.passStartTime = JulianDate.addSeconds(
+      anchor,
+      orbitCount * orbitPeriodSec,
+      new JulianDate(),
+    );
+    this.swathManager._lastSec = nextPassStartSec;
+    this._lastFrameSec = initialSec + targetSimSec;
+    this.swathCount = this.swathManager.count;
+  }
+
   get coverageCellCount() {
     return this.coveragePlanner.grid.coveredCellCount;
   }

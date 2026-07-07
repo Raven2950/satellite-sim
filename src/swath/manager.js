@@ -33,6 +33,7 @@ export class SwathManager {
     this.halfWidthM = (sensorConfig.swathWidthKm * 1000) / 2;
 
     this.completedPasses = [];
+    this._pendingPasses = [];
     this.activePrimitive = null;
     this._activePoints = [];
     this.passStartTime = null;
@@ -106,6 +107,62 @@ export class SwathManager {
     this.viewer.scene.groundPrimitives.add(next);
     this._destroyPrimitive(this.activePrimitive);
     this.activePrimitive = next;
+  }
+
+  /** 离线快进：采样一整圈轨迹，暂存链式点列（不创建 GPU 条带） */
+  simulateOrbitPass(passStartSec, orbitPeriodSec, passStartTime) {
+    const endSec = passStartSec + orbitPeriodSec;
+    const nadirSensor = { ...this.sensorConfig, rollDeg: 0 };
+    const chains = sampleGroundTrackPath(
+      passStartSec,
+      endSec,
+      orbitPeriodSec,
+      this.orbitConfig,
+      nadirSensor,
+      this.ellipsoid,
+      this.orbitEpoch,
+    );
+
+    if (chains.length === 0) return;
+
+    this._pendingPasses.push({
+      cachedChains: chains.map((c) => c.map((p) => Cartesian3.clone(p))),
+      acquisitionTime: JulianDate.clone(passStartTime, new JulianDate()),
+    });
+  }
+
+  /** 将离线暂存的条带批量提交到场景 */
+  async flushPendingPasses(currentTime, { onProgress } = {}) {
+    const pending = this._pendingPasses;
+    this._pendingPasses = [];
+    if (pending.length === 0) return;
+
+    const batchSize = 40;
+    for (let i = 0; i < pending.length; i++) {
+      const pass = pending[i];
+      const ageSec = JulianDate.secondsDifference(
+        currentTime,
+        pass.acquisitionTime,
+      );
+      const ageDays = secondsToDays(ageSec);
+      const color = swathColorForAge(ageDays, this.fadeConfig);
+      const primitive = this._buildStripFromChains(pass.cachedChains, color);
+      if (primitive) {
+        this.viewer.scene.groundPrimitives.add(primitive);
+        this.completedPasses.push({
+          primitive,
+          cachedChains: pass.cachedChains,
+          acquisitionTime: pass.acquisitionTime,
+          colorBucket: fadeColorBucket(ageDays, this.fadeConfig),
+        });
+      }
+
+      if (i % batchSize === batchSize - 1) {
+        onProgress?.((i + 1) / pending.length);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    }
+    onProgress?.(1);
   }
 
   finalizePass(orbitPeriodSec) {
@@ -229,6 +286,7 @@ export class SwathManager {
   }
 
   clear() {
+    this._pendingPasses = [];
     this._destroyPrimitive(this.activePrimitive);
     this.activePrimitive = null;
     for (const pass of this.completedPasses) {
