@@ -16,8 +16,8 @@ import './style.css';
 
 const { JulianDate } = Cesium;
 
-/** 每帧最大仿真推进（秒），防止切后台一次跳太多 */
-const MAX_SIM_STEP_SEC = 120;
+/** 后台每步最大仿真推进（秒） */
+const BG_SIM_CHUNK_SEC = 90;
 
 function renderParamDisplay(registry, simClock) {
   const sat = DEFAULT_SATELLITES[0];
@@ -43,62 +43,88 @@ function renderParamDisplay(registry, simClock) {
     .join('');
 }
 
-/**
- * 仿真主循环：Date.now 墙钟差 + 限幅仿真步长
- * 后台标签页继续推进，回前台不丢当前圈
- */
 function startSimulationLoop(viewer, simClock, registry, timeControls) {
-  let lastWall = Date.now();
+  let lastWall = performance.now();
+  let lastBgWall = Date.now();
   let lastUiRefresh = 0;
+  let bgTimer = null;
 
-  const step = () => {
-    const now = Date.now();
-    let wallDelta = Math.max(0, (now - lastWall) / 1000);
-    lastWall = now;
+  const syncAndUpdate = () => {
+    simClock.syncToViewer(viewer);
+    registry.updateAll(simClock.currentTime);
+  };
 
-    if (!simClock.live && simClock.playing && wallDelta > 0) {
-      const simAdvance = Math.min(
-        wallDelta * simClock.multiplier,
-        MAX_SIM_STEP_SEC,
-      );
+  /** 后台：把墙钟时间拆成多步仿真推进 */
+  const advanceBackground = (wallDeltaSec) => {
+    if (simClock.live || !simClock.playing || wallDeltaSec <= 0) return;
+
+    let remaining = wallDeltaSec * simClock.multiplier;
+    while (remaining > 0.5) {
+      const chunk = Math.min(remaining, BG_SIM_CHUNK_SEC);
       JulianDate.addSeconds(
         simClock.currentTime,
-        simAdvance,
+        chunk,
         simClock.currentTime,
       );
       simClock.currentTime = simClock.clamp(simClock.currentTime);
-    } else if (simClock.live) {
-      simClock.currentTime = JulianDate.clone(
-        JulianDate.now(),
-        simClock.currentTime,
-      );
+      registry.updateAll(simClock.currentTime);
+      remaining -= chunk;
     }
-
     simClock.syncToViewer(viewer);
-    registry.updateAll(simClock.currentTime);
-
-    if (now - lastUiRefresh > 1000) {
-      timeControls.refresh();
-      renderParamDisplay(registry, simClock);
-      lastUiRefresh = now;
-    }
-
-    viewer.scene.requestRender();
   };
 
-  setInterval(step, document.hidden ? 1000 : 50);
+  const frame = () => {
+    const now = performance.now();
+    const wallDelta = Math.min((now - lastWall) / 1000, 0.1);
+    lastWall = now;
 
-  document.addEventListener('visibilitychange', () => {
-    lastWall = Date.now();
-  });
-
-  const renderLoop = () => {
     if (!document.hidden) {
+      simClock.tick(wallDelta);
+      syncAndUpdate();
+
+      if (now - lastUiRefresh > 1000) {
+        timeControls.refresh();
+        renderParamDisplay(registry, simClock);
+        lastUiRefresh = now;
+      }
       viewer.scene.requestRender();
     }
-    requestAnimationFrame(renderLoop);
+
+    requestAnimationFrame(frame);
   };
-  requestAnimationFrame(renderLoop);
+
+  const startBgTimer = () => {
+    if (bgTimer) return;
+    lastBgWall = Date.now();
+    bgTimer = setInterval(() => {
+      const now = Date.now();
+      const wallDelta = (now - lastBgWall) / 1000;
+      lastBgWall = now;
+      advanceBackground(wallDelta);
+      viewer.scene.requestRender();
+    }, 1000);
+  };
+
+  const stopBgTimer = () => {
+    if (!bgTimer) return;
+    clearInterval(bgTimer);
+    bgTimer = null;
+  };
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      lastBgWall = Date.now();
+      startBgTimer();
+    } else {
+      const catchup = (Date.now() - lastBgWall) / 1000;
+      stopBgTimer();
+      advanceBackground(catchup);
+      lastWall = performance.now();
+      viewer.scene.requestRender();
+    }
+  });
+
+  requestAnimationFrame(frame);
 }
 
 async function main() {
