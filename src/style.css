@@ -239,6 +239,54 @@ body {
   gap: 4px;
 }
 
+.wf-jump-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  max-width: 280px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(8, 14, 24, 0.55);
+}
+
+.wf-jump-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #6a8498;
+  margin-right: 2px;
+}
+
+.wf-btn-jump {
+  padding: 5px 8px;
+  font-size: 11px;
+}
+
+.wf-jump-input {
+  width: 52px;
+  padding: 5px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #b0c4d8;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.wf-jump-input:focus {
+  outline: none;
+  border-color: rgba(94, 232, 240, 0.45);
+}
+
+.wf-btn-jump-go {
+  padding: 5px 10px;
+  font-size: 11px;
+}
+
 .wf-btn {
   padding: 7px 12px;
   border: 1px solid rgba(255, 255, 255, 0.12);

@@ -41,6 +41,25 @@
                 <svg class="wf-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M4 18l8.5-6L4 6v12zm9 0l8.5-6-8.5-6v12zm9 0l8.5-6-8.5-6v12z"/></svg>
               </button>
             </div>
+            <div class="wf-jump-row" title="离线快进到指定仿真天数，完成后可继续倍速播放">
+              <span class="wf-jump-label">跳转</span>
+              <button type="button" class="wf-btn wf-btn-jump" data-jump-days="5">5天</button>
+              <button type="button" class="wf-btn wf-btn-jump" data-jump-days="10">10天</button>
+              <button type="button" class="wf-btn wf-btn-jump" data-jump-days="15">15天</button>
+              <button type="button" class="wf-btn wf-btn-jump" data-jump-days="30">30天</button>
+              <button type="button" class="wf-btn wf-btn-jump" data-jump-days="60">60天</button>
+              <input
+                type="number"
+                id="jumpDaysInput"
+                class="wf-jump-input"
+                min="0"
+                max="400"
+                step="1"
+                placeholder="天数"
+                aria-label="自定义跳转天数"
+              />
+              <button type="button" id="btnJumpGo" class="wf-btn wf-btn-jump-go">前往</button>
+            </div>
           </div>
       </div>
     </div>

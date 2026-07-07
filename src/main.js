@@ -12,6 +12,7 @@ import { DEFAULT_SATELLITES } from './config/satellite.js';
 import { SatelliteRegistry } from './satellites/registry.js';
 import { orbitalPeriodSeconds, ensureIcrfReady } from './orbit/propagate.js';
 import { TimeControls } from './ui/timeControls.js';
+import { DayJumpControls } from './ui/dayJumpControls.js';
 import './style.css';
 
 const { JulianDate } = Cesium;
@@ -43,7 +44,7 @@ function renderParamDisplay(registry, simClock) {
     .join('');
 }
 
-function startSimulationLoop(viewer, simClock, registry, timeControls) {
+function startSimulationLoop(viewer, simClock, registry, timeControls, { isJumping }) {
   let lastWall = performance.now();
   let lastBgWall = Date.now();
   let lastUiRefresh = 0;
@@ -56,7 +57,9 @@ function startSimulationLoop(viewer, simClock, registry, timeControls) {
 
   /** 后台：把墙钟时间拆成多步仿真推进 */
   const advanceBackground = (wallDeltaSec) => {
-    if (simClock.live || !simClock.playing || wallDeltaSec <= 0) return;
+    if (isJumping() || simClock.live || !simClock.playing || wallDeltaSec <= 0) {
+      return;
+    }
 
     let remaining = wallDeltaSec * simClock.multiplier;
     while (remaining > 0.5) {
@@ -78,7 +81,7 @@ function startSimulationLoop(viewer, simClock, registry, timeControls) {
     const wallDelta = Math.min((now - lastWall) / 1000, 0.1);
     lastWall = now;
 
-    if (!document.hidden) {
+    if (!document.hidden && !isJumping()) {
       simClock.tick(wallDelta);
       syncAndUpdate();
 
@@ -185,7 +188,24 @@ async function main() {
     onTimeChange();
 
     const timeControls = new TimeControls(simClock, { onChange: onTimeChange });
-    startSimulationLoop(viewer, simClock, registry, timeControls);
+
+    let jumping = false;
+    const isJumping = () => jumping;
+
+    new DayJumpControls({
+      simClock,
+      registry,
+      viewer,
+      setJumping: (value) => {
+        jumping = value;
+      },
+      onJumpComplete: () => {
+        timeControls.refresh();
+        renderParamDisplay(registry, simClock);
+      },
+    });
+
+    startSimulationLoop(viewer, simClock, registry, timeControls, { isJumping });
 
     renderParamDisplay(registry, simClock);
   } catch (err) {

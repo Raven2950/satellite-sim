@@ -197,8 +197,23 @@ export class SimClock {
     return Math.max(0, sec / 86400);
   }
 
+  getSimAnchor() {
+    return JulianDate.clone(this._simAnchor ?? this.startTime, new JulianDate());
+  }
+
   markSimAnchor() {
     this._simAnchor = JulianDate.clone(this.currentTime, new JulianDate());
+  }
+
+  /** 跳转到自仿真起点起第 N 天，暂停播放 */
+  jumpToSimDays(days) {
+    this.live = false;
+    this.playing = false;
+    this.activeSpeed = 'paused';
+
+    const anchor = this._simAnchor ?? this.startTime;
+    JulianDate.addSeconds(anchor, days * 86400, this.currentTime);
+    this.currentTime = this.clamp(this.currentTime);
   }
 
   syncToViewer(viewer) {
