@@ -1,5 +1,4 @@
 import * as Cesium from 'cesium';
-import { SWATH_SCRUB_RESET_SEC } from '../config/satellite.js';
 import {
   computeEcefPosition,
   computeEcefVelocity,
@@ -12,6 +11,9 @@ import { resolveSatelliteModelUri } from './modelLoader.js';
 import { SensorCone, computeNadirOrientation } from './sensorCone.js';
 
 const { JulianDate } = Cesium;
+
+/** 时间大跳时按轨补采样，而非清空当前圈 */
+const CATCHUP_ORBIT_FRACTION = 0.25;
 
 export class Satellite {
   constructor(viewer, config, orbitEpoch) {
@@ -72,6 +74,24 @@ export class Satellite {
     });
   }
 
+  _sampleImagingAt(sec, julianDate) {
+    const nadirGround = computeGroundCartesian(
+      julianDate,
+      sec,
+      this.config.orbit,
+      { ...this.config.sensor, rollDeg: 0 },
+      this.ellipsoid,
+    );
+    const vel = computeEcefVelocity(julianDate, sec, this.config.orbit);
+    return this.coveragePlanner.planImaging(
+      julianDate,
+      sec,
+      nadirGround,
+      vel,
+      this.ellipsoid,
+    );
+  }
+
   loadModel() {
     if (this._modelLoadPromise) return this._modelLoadPromise;
 
@@ -108,6 +128,8 @@ export class Satellite {
     const pos = computeEcefPosition(currentTime, sec, this.config.orbit);
     const vel = computeEcefVelocity(currentTime, sec, this.config.orbit);
 
+    this._handleTimeJump(currentTime, sec);
+
     const nadirGround = computeGroundCartesian(
       currentTime,
       sec,
@@ -124,7 +146,6 @@ export class Satellite {
       this.ellipsoid,
     );
 
-    const footprintGround = imaging.rollGround ?? imaging.nadirGround;
     const modelCfg = this.config.appearance?.model ?? {};
 
     this.entity.position = pos;
@@ -134,22 +155,8 @@ export class Satellite {
       yaw: modelCfg.yawDeg ?? 0,
     });
 
-    this.sensorCone.update(pos, footprintGround, vel);
-
-    this._updateSwath(currentTime, sec, imaging);
-    this.swathManager.updateFade(currentTime);
-    this.swathCount = this.swathManager.count;
-  }
-
-  _updateSwath(currentTime, sec, imaging) {
-    if (this._lastFrameSec !== null) {
-      const frameAdv = sec - this._lastFrameSec;
-      if (frameAdv < 0 || frameAdv > SWATH_SCRUB_RESET_SEC) {
-        this.swathManager.resetSampling();
-        this.coveragePlanner.reset();
-      }
-    }
-    this._lastFrameSec = sec;
+    // 绿色视场锥始终对地，与偏转补扫条带解耦
+    this.sensorCone.update(pos, nadirGround, vel);
 
     this.swathManager.updateActivePass(
       currentTime,
@@ -157,6 +164,47 @@ export class Satellite {
       this.orbitPeriodSec,
       imaging,
     );
+    this.swathManager.updateFade(currentTime);
+    this.swathCount = this.swathManager.count;
+    this._lastFrameSec = sec;
+  }
+
+  /** 仅时间回退时重置；前进大跳则固化当前圈并补采样 */
+  _handleTimeJump(currentTime, sec) {
+    if (this._lastFrameSec === null) {
+      this._lastFrameSec = sec;
+      return;
+    }
+
+    const frameAdv = sec - this._lastFrameSec;
+    if (frameAdv < 0) {
+      this.swathManager.resetSampling();
+      this.coveragePlanner.reset();
+      return;
+    }
+
+    const catchupThreshold = this.orbitPeriodSec * CATCHUP_ORBIT_FRACTION;
+    if (frameAdv <= catchupThreshold) return;
+
+    this.swathManager.finalizePass();
+
+    const sampleImaging = (sampleSec) => {
+      const jd = JulianDate.addSeconds(
+        this.orbitEpoch,
+        sampleSec,
+        new JulianDate(),
+      );
+      return this._sampleImagingAt(sampleSec, jd);
+    };
+
+    this.swathManager.resamplePassRange(
+      this._lastFrameSec,
+      sec,
+      this.orbitPeriodSec,
+      sampleImaging,
+    );
+
+    this.swathManager.beginPass(currentTime, sec);
   }
 
   get coverageCellCount() {

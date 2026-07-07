@@ -16,6 +16,9 @@ import './style.css';
 
 const { JulianDate } = Cesium;
 
+/** 每帧最大仿真推进（秒），防止切后台一次跳太多 */
+const MAX_SIM_STEP_SEC = 120;
+
 function renderParamDisplay(registry, simClock) {
   const sat = DEFAULT_SATELLITES[0];
   const periodMin = (orbitalPeriodSeconds(sat.orbit.altitudeKm) / 60).toFixed(1);
@@ -41,23 +44,36 @@ function renderParamDisplay(registry, simClock) {
 }
 
 /**
- * 仿真主循环：setInterval 驱动，后台标签页仍可推进（浏览器会节流但不停）
+ * 仿真主循环：Date.now 墙钟差 + 限幅仿真步长
+ * 后台标签页继续推进，回前台不丢当前圈
  */
 function startSimulationLoop(viewer, simClock, registry, timeControls) {
   let lastWall = Date.now();
   let lastUiRefresh = 0;
-  let lastBgRender = 0;
 
   const step = () => {
     const now = Date.now();
-    let wallDelta = (now - lastWall) / 1000;
+    let wallDelta = Math.max(0, (now - lastWall) / 1000);
     lastWall = now;
 
-    const hidden = document.hidden;
-    const maxDelta = hidden ? 30 : 0.25;
-    wallDelta = Math.min(Math.max(wallDelta, 0), maxDelta);
+    if (!simClock.live && simClock.playing && wallDelta > 0) {
+      const simAdvance = Math.min(
+        wallDelta * simClock.multiplier,
+        MAX_SIM_STEP_SEC,
+      );
+      JulianDate.addSeconds(
+        simClock.currentTime,
+        simAdvance,
+        simClock.currentTime,
+      );
+      simClock.currentTime = simClock.clamp(simClock.currentTime);
+    } else if (simClock.live) {
+      simClock.currentTime = JulianDate.clone(
+        JulianDate.now(),
+        simClock.currentTime,
+      );
+    }
 
-    simClock.tick(wallDelta);
     simClock.syncToViewer(viewer);
     registry.updateAll(simClock.currentTime);
 
@@ -67,28 +83,22 @@ function startSimulationLoop(viewer, simClock, registry, timeControls) {
       lastUiRefresh = now;
     }
 
-    const shouldRender = !hidden || now - lastBgRender > 3000;
-    if (shouldRender) {
-      viewer.scene.requestRender();
-      lastBgRender = now;
-    }
+    viewer.scene.requestRender();
   };
 
-  setInterval(step, 50);
+  setInterval(step, document.hidden ? 1000 : 50);
 
   document.addEventListener('visibilitychange', () => {
     lastWall = Date.now();
   });
 
-  if (!document.hidden) {
-    const renderLoop = () => {
-      if (!document.hidden) {
-        viewer.scene.requestRender();
-      }
-      requestAnimationFrame(renderLoop);
-    };
+  const renderLoop = () => {
+    if (!document.hidden) {
+      viewer.scene.requestRender();
+    }
     requestAnimationFrame(renderLoop);
-  }
+  };
+  requestAnimationFrame(renderLoop);
 }
 
 async function main() {
@@ -123,11 +133,7 @@ async function main() {
     if (loadingEl) loadingEl.textContent = '正在加载轨道数据…';
     try {
       const now = simClock.currentTime;
-      const icrfStart = JulianDate.addDays(
-        now,
-        -30,
-        new JulianDate(),
-      );
+      const icrfStart = JulianDate.addDays(now, -30, new JulianDate());
       const icrfStop = JulianDate.addDays(
         now,
         SIMULATION.icrfPreloadDays ?? 400,
