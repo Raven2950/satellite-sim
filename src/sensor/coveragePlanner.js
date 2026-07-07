@@ -62,6 +62,20 @@ export class CoverageGrid {
     }
   }
 
+  /** 该点邻域内是否存在已覆盖栅格（条带边缘缺口判定） */
+  hasCoveredNeighbor(latDeg, lonDeg, radiusDeg) {
+    const steps = Math.max(1, Math.ceil(radiusDeg / this.cellDeg));
+    for (let di = -steps; di <= steps; di++) {
+      for (let dj = -steps; dj <= steps; dj++) {
+        if (di === 0 && dj === 0) continue;
+        if (this.isCovered(latDeg + di * this.cellDeg, lonDeg + dj * this.cellDeg)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   get coveredCellCount() {
     return this.covered.size;
   }
@@ -79,7 +93,7 @@ const _scratchTarget = new Cartesian3();
 const _scratchSurf = new Cartesian3();
 
 /**
- * 策略 A：默认对地（roll=0），星下点扫过后对侧向未覆盖区域选最优目标偏转补扫
+ * 策略 A：默认对地；仅在当前轨迹后方、紧贴已扫条带边缘的未覆盖缺口处偏转补扫
  */
 export class CoveragePlanner {
   constructor(orbitConfig, sensorConfig) {
@@ -91,6 +105,10 @@ export class CoveragePlanner {
     this.maxRollDeg = sensorConfig.maxRollDeg ?? 30;
     this.maxCrossM =
       this.altitudeM * Math.tan(CesiumMath.toRadians(this.maxRollDeg));
+    /** 仅在条带外缘再向外搜索的窄带（米） */
+    this.gapBandM = sensorConfig.gapSearchBandM ?? 20_000;
+    /** 沿轨向后搜索长度（米） */
+    this.behindAlongM = sensorConfig.gapSearchBehindM ?? 80_000;
     this._prevNadir = null;
     this.currentRollDeg = 0;
     this.lastGapFill = false;
@@ -145,9 +163,11 @@ export class CoveragePlanner {
     };
   }
 
-  /** 在星下点后方、侧向未覆盖带内选最优补扫目标 */
+  /**
+   * 仅在「当前轨迹后方 + 条带外缘窄带 + 邻接已覆盖区」的未覆盖点中择优
+   */
   _findBestGapTarget(nadirGround, vel, ellipsoid) {
-    if (this.maxRollDeg < 0.5) return null;
+    if (this.maxRollDeg < 0.5 || !this._prevNadir) return null;
 
     const up = ellipsoid.geodeticSurfaceNormal(nadirGround, _scratchUp);
     let along = Cartesian3.cross(up, vel, _scratchAlong);
@@ -159,13 +179,17 @@ export class CoveragePlanner {
     const cross = Cartesian3.cross(up, along, _scratchCross);
     Cartesian3.normalize(cross, cross);
 
-    const minCross = this.halfSwathM * 1.05;
-    const maxCross = this.maxCrossM;
+    const minCross = this.halfSwathM * 0.98;
+    const maxCross = Math.min(
+      this.halfSwathM + this.gapBandM,
+      this.maxCrossM,
+    );
     if (maxCross <= minCross) return null;
 
-    const behindM = 350000;
-    const alongSteps = 12;
-    const crossSteps = 10;
+    const behindM = this.behindAlongM;
+    const alongSteps = 10;
+    const crossSteps = 6;
+    const neighborRadiusDeg = (this.halfSwathM * 0.15) / M_PER_DEG_LAT;
 
     let best = null;
     let bestScore = -1;
@@ -191,14 +215,20 @@ export class CoveragePlanner {
           carto.height = 0;
           const onSurf = ellipsoid.cartographicToCartesian(carto, _scratchSurf);
 
-          if (this.grid.isCoveredAtCartesian(onSurf, ellipsoid)) continue;
+          const lat = CesiumMath.toDegrees(carto.latitude);
+          const lon = CesiumMath.toDegrees(carto.longitude);
+
+          if (this.grid.isCovered(lat, lon)) continue;
+          if (!this.grid.hasCoveredNeighbor(lat, lon, neighborRadiusDeg)) {
+            continue;
+          }
 
           const rollDeg =
             side *
             CesiumMath.toDegrees(Math.atan2(crossDist, this.altitudeM));
           if (Math.abs(rollDeg) > this.maxRollDeg + 0.01) continue;
 
-          const score = 1 / crossDist + ai * 0.002;
+          const score = 1 / crossDist + ai * 0.001;
           if (score > bestScore) {
             bestScore = score;
             best = { rollDeg };

@@ -4,7 +4,6 @@ import {
   computeEcefPosition,
   computeEcefVelocity,
   computeGroundCartesian,
-  buildOrbitRingPositions,
   orbitalPeriodSeconds,
 } from '../orbit/propagate.js';
 import { CoveragePlanner } from '../sensor/coveragePlanner.js';
@@ -45,7 +44,6 @@ export class Satellite {
       ...coneOpts,
     });
 
-    this._buildOrbitRing();
     this._buildEntity();
   }
 
@@ -53,28 +51,8 @@ export class Satellite {
     return JulianDate.secondsDifference(time, this.orbitEpoch);
   }
 
-  _buildOrbitRing() {
-    const sec = 0;
-    this.orbitRingEntity = this.viewer.entities.add({
-      id: `${this.config.id}-orbit-ring`,
-      polyline: {
-        positions: buildOrbitRingPositions(
-          this.orbitEpoch,
-          this.config.orbit,
-          sec,
-        ),
-        width: 1.5,
-        material: Cesium.Color.CYAN.withAlpha(0.45),
-        arcType: Cesium.ArcType.NONE,
-      },
-    });
-  }
-
   _buildEntity() {
     const { id, name, appearance } = this.config;
-    const pointColor = Cesium.Color.fromCssColorString(
-      appearance?.pointColor ?? '#00FFFF',
-    );
     const sec = 0;
 
     this.entity = this.viewer.entities.add({
@@ -82,8 +60,11 @@ export class Satellite {
       name,
       position: computeEcefPosition(this.orbitEpoch, sec, this.config.orbit),
       point: {
+        show: false,
         pixelSize: appearance?.pointSize ?? 14,
-        color: pointColor,
+        color: Cesium.Color.fromCssColorString(
+          appearance?.pointColor ?? '#00FFFF',
+        ),
         outlineColor: Cesium.Color.BLACK,
         outlineWidth: 2,
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
@@ -97,7 +78,10 @@ export class Satellite {
     this._modelLoadPromise = (async () => {
       const modelCfg = this.config.appearance?.model ?? {};
       const uri = await resolveSatelliteModelUri(modelCfg);
-      if (!uri) return false;
+      if (!uri) {
+        if (this.entity.point) this.entity.point.show = true;
+        return false;
+      }
 
       try {
         this.entity.model = {
@@ -111,6 +95,7 @@ export class Satellite {
         return true;
       } catch (err) {
         console.warn('Satellite model failed:', err);
+        if (this.entity.point) this.entity.point.show = true;
         return false;
       }
     })();
@@ -151,14 +136,6 @@ export class Satellite {
 
     this.sensorCone.update(pos, footprintGround, vel);
 
-    if (this.orbitRingEntity?.polyline) {
-      this.orbitRingEntity.polyline.positions = buildOrbitRingPositions(
-        currentTime,
-        this.config.orbit,
-        sec,
-      );
-    }
-
     this._updateSwath(currentTime, sec, imaging);
     this.swathManager.updateFade(currentTime);
     this.swathCount = this.swathManager.count;
@@ -191,8 +168,6 @@ export class Satellite {
   }
 
   destroy() {
-    const ring = this.viewer.entities.getById(`${this.config.id}-orbit-ring`);
-    if (ring) this.viewer.entities.remove(ring);
     if (this.entity) {
       this.viewer.entities.remove(this.entity);
       this.entity = null;

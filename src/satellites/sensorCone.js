@@ -137,10 +137,13 @@ export class SensorCone {
   }
 
   _removePrimitive(ref) {
-    if (this[ref]) {
-      this.viewer.scene.primitives.remove(this[ref]);
-      this[ref] = null;
+    const primitive = this[ref];
+    if (!primitive) return;
+    this.viewer.scene.primitives.remove(primitive);
+    if (!primitive.isDestroyed()) {
+      primitive.destroy();
     }
+    this[ref] = null;
   }
 
   _makePrimitive(positions, indices, color) {
