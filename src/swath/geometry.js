@@ -114,7 +114,8 @@ export function sampleOrbitSwathChains(
   const stepSec = orbitPeriodSec / samplesPerOrbit;
   const endSec = passStartSec + orbitPeriodSec;
   const nadirPoints = [];
-  const rollPoints = [];
+  const rollChains = [];
+  let rollChain = [];
 
   for (let t = passStartSec; t <= endSec + stepSec * 0.01; t += stepSec) {
     const sec = Math.min(t, endSec);
@@ -145,15 +146,25 @@ export function sampleOrbitSwathChains(
 
     nadirPoints.push(nadir);
     if (rollGround) {
-      rollPoints.push(rollGround);
+      rollChain.push(rollGround);
+    } else if (rollChain.length >= 2) {
+      rollChains.push(rollChain);
+      rollChain = [];
+    } else {
+      rollChain = [];
     }
     if (sec >= endSec) break;
   }
 
-  return [
-    ..._splitAtDiscontinuities(nadirPoints),
-    ..._splitAtDiscontinuities(rollPoints),
-  ];
+  if (rollChain.length >= 2) {
+    rollChains.push(rollChain);
+  }
+
+  const splitRollChains = rollChains.flatMap((chain) =>
+    _splitAtDiscontinuities(chain),
+  );
+
+  return [..._splitAtDiscontinuities(nadirPoints), ...splitRollChains];
 }
 
 /** 将多段 ground chain 合并为条带 primitive 所需点列 */

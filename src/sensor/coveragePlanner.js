@@ -195,11 +195,54 @@ export class CoveragePlanner {
   }
 
   /**
+   * 星下点落在已扫区域时：侧向偏转，把视场移到邻近未覆盖区
+   */
+  _findOverlapAvoidanceRoll(nadirGround, vel, ellipsoid) {
+    const up = ellipsoid.geodeticSurfaceNormal(nadirGround, _scratchUp);
+    let along = Cartesian3.cross(up, vel, _scratchAlong);
+    if (Cartesian3.magnitudeSquared(along) < 1e-6) {
+      along = Cartesian3.cross(up, Cartesian3.UNIT_X, _scratchAlong);
+    }
+    Cartesian3.normalize(along, along);
+
+    const cross = Cartesian3.cross(up, along, _scratchCross);
+    Cartesian3.normalize(cross, cross);
+
+    const crossSteps = 8;
+    const minCross = this.halfSwathM * 0.25;
+    const maxCross = Math.min(this.maxCrossM, this.halfSwathM * 2.5);
+
+    for (let ci = 1; ci <= crossSteps; ci++) {
+      const crossDist = minCross + ((maxCross - minCross) * ci) / crossSteps;
+      for (const side of [-1, 1]) {
+        const offset = Cartesian3.multiplyByScalar(
+          cross,
+          side * crossDist,
+          _scratchOffset,
+        );
+        const raw = Cartesian3.add(nadirGround, offset, _scratchTarget);
+        const carto = ellipsoid.cartesianToCartographic(raw);
+        carto.height = 0;
+        const lat = CesiumMath.toDegrees(carto.latitude);
+        const lon = CesiumMath.toDegrees(carto.longitude);
+
+        if (this.grid.isCovered(lat, lon)) continue;
+
+        const rollDeg =
+          side * CesiumMath.toDegrees(Math.atan2(crossDist, this.altitudeM));
+        if (Math.abs(rollDeg) > this.maxRollDeg + 0.01) continue;
+
+        return { rollDeg };
+      }
+    }
+
+    return null;
+  }
+
+  /**
    * 仅在「当前轨迹后方 + 条带外缘窄带 + 邻接已覆盖区」的未覆盖点中择优
    */
-  _findBestGapTarget(nadirGround, vel, ellipsoid) {
-    if (this.maxRollDeg < 0.5 || !this._prevNadir) return null;
-
+  _findEdgeGapRoll(nadirGround, vel, ellipsoid) {
     const up = ellipsoid.geodeticSurfaceNormal(nadirGround, _scratchUp);
     let along = Cartesian3.cross(up, vel, _scratchAlong);
     if (Cartesian3.magnitudeSquared(along) < 1e-6) {
@@ -244,7 +287,6 @@ export class CoveragePlanner {
           const raw = Cartesian3.add(nadirGround, offset, _scratchTarget);
           const carto = ellipsoid.cartesianToCartographic(raw);
           carto.height = 0;
-          const onSurf = ellipsoid.cartographicToCartesian(carto, _scratchSurf);
 
           const lat = CesiumMath.toDegrees(carto.latitude);
           const lon = CesiumMath.toDegrees(carto.longitude);
@@ -269,5 +311,20 @@ export class CoveragePlanner {
     }
 
     return best;
+  }
+
+  _findBestGapTarget(nadirGround, vel, ellipsoid) {
+    if (this.maxRollDeg < 0.5 || !this._prevNadir) return null;
+
+    if (this.grid.isCoveredAtCartesian(nadirGround, ellipsoid)) {
+      const overlapRoll = this._findOverlapAvoidanceRoll(
+        nadirGround,
+        vel,
+        ellipsoid,
+      );
+      if (overlapRoll) return overlapRoll;
+    }
+
+    return this._findEdgeGapRoll(nadirGround, vel, ellipsoid);
   }
 }

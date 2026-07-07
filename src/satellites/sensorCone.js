@@ -119,6 +119,26 @@ export class SensorCone {
     this._removePrimitive('_groundPrimitive');
   }
 
+  /** 跳转/离线仿真时隐藏视场锥，避免棱线留在旧位置 */
+  setVisible(visible) {
+    for (const entity of this._edgeEntities) {
+      if (entity) entity.show = visible;
+    }
+    if (this._groundRingEntity) {
+      this._groundRingEntity.show = visible;
+    }
+    if (!visible) {
+      this.clearVisuals();
+      const empty = [];
+      for (const entity of this._edgeEntities) {
+        if (entity?.polyline) entity.polyline.positions = empty;
+      }
+      if (this._groundRingEntity?.polyline) {
+        this._groundRingEntity.polyline.positions = empty;
+      }
+    }
+  }
+
   update(satPos, groundCenter, velocityEcef) {
     const corners = computeNadirFootprintCorners(
       groundCenter,
@@ -133,6 +153,11 @@ export class SensorCone {
     }
 
     const [c0, c1, c2, c3] = corners;
+
+    for (const entity of this._edgeEntities) {
+      if (entity) entity.show = true;
+    }
+    if (this._groundRingEntity) this._groundRingEntity.show = true;
 
     this._rebuildBodyPrimitive(satPos, c0, c1, c2, c3);
     this._rebuildGroundPrimitive(c0, c1, c2, c3);

@@ -84,6 +84,22 @@ export class SwathManager {
       this._advanceActivePoints(rollGround, this._activeRollPoints);
     }
 
+    this._rebuildActiveChains();
+
+    this._lastSec = currentSec;
+  }
+
+  appendImagingSample(nadirGround, rollGround = null) {
+    if (nadirGround) {
+      this._advanceActivePoints(nadirGround, this._activePoints);
+    }
+    if (rollGround) {
+      this._advanceActivePoints(rollGround, this._activeRollPoints);
+    }
+    this._rebuildActiveChains();
+  }
+
+  _rebuildActiveChains() {
     const chains = [];
     if (this._activePoints.length >= 2) {
       chains.push(this._activePoints.map((p) => Cartesian3.clone(p)));
@@ -94,8 +110,6 @@ export class SwathManager {
     if (chains.length > 0) {
       this._rebuildActivePrimitive(chains);
     }
-
-    this._lastSec = currentSec;
   }
 
   setCoveragePlanner(coveragePlanner) {

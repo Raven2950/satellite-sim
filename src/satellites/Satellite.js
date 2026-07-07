@@ -116,14 +116,35 @@ export class Satellite {
       this.ellipsoid,
     );
 
-    // 覆盖规划（偏转）更新栅格/HUD；偏转地面点仅用于白色条带
-    const imaging = this.coveragePlanner.planImaging(
-      currentTime,
-      sec,
-      nadirGround,
-      vel,
-      this.ellipsoid,
-    );
+    if (this._lastFrameSec !== null && sec < this._lastFrameSec) {
+      this.swathManager.resetSampling();
+      this.coveragePlanner.reset();
+    }
+
+    const denseStep = this.orbitPeriodSec / 360;
+    let imaging;
+
+    if (
+      this._lastFrameSec !== null &&
+      sec - this._lastFrameSec > denseStep * 2
+    ) {
+      imaging = this._denseImagingAdvance(this._lastFrameSec, sec);
+    } else {
+      imaging = this.coveragePlanner.planImaging(
+        currentTime,
+        sec,
+        nadirGround,
+        vel,
+        this.ellipsoid,
+      );
+      this.swathManager.updateActivePass(
+        currentTime,
+        sec,
+        this.orbitPeriodSec,
+        imaging.nadirGround,
+        imaging.rollGround,
+      );
+    }
 
     const modelCfg = this.config.appearance?.model ?? {};
 
@@ -135,22 +156,53 @@ export class Satellite {
     });
 
     this.sensorCone.update(pos, nadirGround, vel);
-
-    if (this._lastFrameSec !== null && sec < this._lastFrameSec) {
-      this.swathManager.resetSampling();
-      this.coveragePlanner.reset();
-    }
     this._lastFrameSec = sec;
 
-    this.swathManager.updateActivePass(
-      currentTime,
-      sec,
-      this.orbitPeriodSec,
-      imaging.nadirGround,
-      imaging.rollGround,
-    );
     this.swathManager.updateFade(currentTime);
     this.swathCount = this.swathManager.count;
+  }
+
+  /** 倍速大步长时稠密补采样，避免当前圈条带拉成跨球面大三角 */
+  _denseImagingAdvance(fromSec, toSec) {
+    const stepSec = this.orbitPeriodSec / 360;
+    const scratch = new JulianDate();
+    let lastImaging = null;
+
+    for (let t = fromSec + stepSec; t <= toSec + stepSec * 0.001; t += stepSec) {
+      const sec = Math.min(t, toSec);
+      const jd = JulianDate.addSeconds(this.orbitEpoch, sec, scratch);
+      const vel = computeEcefVelocity(jd, sec, this.config.orbit);
+      const nadir = computeGroundCartesian(
+        jd,
+        sec,
+        this.config.orbit,
+        { ...this.config.sensor, rollDeg: 0 },
+        this.ellipsoid,
+      );
+      lastImaging = this.coveragePlanner.planImaging(
+        jd,
+        sec,
+        nadir,
+        vel,
+        this.ellipsoid,
+      );
+      this.swathManager.updateActivePass(
+        jd,
+        sec,
+        this.orbitPeriodSec,
+        lastImaging.nadirGround,
+        lastImaging.rollGround,
+      );
+      if (sec >= toSec) break;
+    }
+
+    return (
+      lastImaging ?? {
+        nadirGround: null,
+        rollGround: null,
+        rollDeg: this.coveragePlanner.currentRollDeg,
+      }
+    );
   }
 
   /**
@@ -189,14 +241,13 @@ export class Satellite {
       onProgress: (fraction) => onProgress?.(0.9 + fraction * 0.1),
     });
 
-    const nextPassStartSec = initialSec + orbitCount * orbitPeriodSec;
-    this.swathManager._passStartSec = nextPassStartSec;
-    this.swathManager.passStartTime = JulianDate.addSeconds(
+    const beginSec = initialSec + orbitCount * orbitPeriodSec;
+    const beginTime = JulianDate.addSeconds(
       anchor,
       orbitCount * orbitPeriodSec,
-      new JulianDate(),
+      scratch,
     );
-    this.swathManager._lastSec = nextPassStartSec;
+    this.swathManager.beginPass(beginTime, beginSec);
     this._lastFrameSec = initialSec + targetSimSec;
     this.swathCount = this.swathManager.count;
   }

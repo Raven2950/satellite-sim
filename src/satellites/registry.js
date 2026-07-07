@@ -75,7 +75,7 @@ export class SatelliteRegistry {
 
   _resetSimulationState() {
     for (const sat of this.satellites.values()) {
-      sat.sensorCone?.clearVisuals();
+      sat.sensorCone?.setVisible(false);
       sat.swathManager.clear();
       sat.coveragePlanner.reset();
       sat._lastFrameSec = null;
@@ -84,7 +84,7 @@ export class SatelliteRegistry {
 
   _prepareVisualsAfterJump() {
     for (const sat of this.satellites.values()) {
-      sat.sensorCone?.clearVisuals();
+      sat.sensorCone?.setVisible(false);
       sat.swathManager.resetSampling();
     }
   }
