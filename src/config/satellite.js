@@ -62,7 +62,7 @@ export const DEFAULT_SATELLITES = [
       gapSearchBehindM: 80_000,
     },
     fade: {
-      cycleDays: 120,
+      cycleDays: 30,
       freshDays: 1,
     },
     appearance: {

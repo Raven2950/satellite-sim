@@ -113,6 +113,12 @@ export class SensorCone {
     });
   }
 
+  /** 清除锥体/地面高亮 primitive，保留棱线 entity（跳转前后防 ghost） */
+  clearVisuals() {
+    this._removePrimitive('_bodyPrimitive');
+    this._removePrimitive('_groundPrimitive');
+  }
+
   update(satPos, groundCenter, velocityEcef) {
     const corners = computeNadirFootprintCorners(
       groundCenter,
@@ -121,7 +127,10 @@ export class SensorCone {
       this.alongHalfM,
       this.ellipsoid,
     );
-    if (!corners) return;
+    if (!corners) {
+      this.clearVisuals();
+      return;
+    }
 
     const [c0, c1, c2, c3] = corners;
 
@@ -191,8 +200,8 @@ export class SensorCone {
       new Uint16Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
       this.fillColor,
     );
-    this.viewer.scene.primitives.add(next);
     this._removePrimitive('_bodyPrimitive');
+    this.viewer.scene.primitives.add(next);
     this._bodyPrimitive = next;
   }
 
@@ -206,8 +215,8 @@ export class SensorCone {
       new Uint16Array([0, 1, 2, 3, 4, 5]),
       CONE_GROUND,
     );
-    this.viewer.scene.primitives.add(next);
     this._removePrimitive('_groundPrimitive');
+    this.viewer.scene.primitives.add(next);
     this._groundPrimitive = next;
   }
 

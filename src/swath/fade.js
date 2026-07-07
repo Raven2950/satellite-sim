@@ -8,7 +8,7 @@ function smoothstep(edge0, edge1, x) {
 }
 
 /**
- * 条带颜色：白 → 灰 → 透明（30 天周期）
+ * 条带颜色：白 → 灰 → 透明（cycleDays 天周期，默认 30 天）
  * 使用 smoothstep 避免白/灰硬切；略降 alpha 减轻多层叠加闪烁
  */
 export function swathColorForAge(ageDays, fadeConfig) {

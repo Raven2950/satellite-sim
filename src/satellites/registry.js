@@ -75,9 +75,17 @@ export class SatelliteRegistry {
 
   _resetSimulationState() {
     for (const sat of this.satellites.values()) {
+      sat.sensorCone?.clearVisuals();
       sat.swathManager.clear();
       sat.coveragePlanner.reset();
       sat._lastFrameSec = null;
+    }
+  }
+
+  _prepareVisualsAfterJump() {
+    for (const sat of this.satellites.values()) {
+      sat.sensorCone?.clearVisuals();
+      sat.swathManager.resetSampling();
     }
   }
 
@@ -113,6 +121,7 @@ export class SatelliteRegistry {
 
     const finalT = JulianDate.addSeconds(anchor, totalSec, scratch);
     simClock.jumpToSimDays(days);
+    this._prepareVisualsAfterJump();
     this.updateAll(finalT);
     onProgress?.(1);
   }
