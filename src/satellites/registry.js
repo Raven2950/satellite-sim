@@ -52,13 +52,18 @@ export class SatelliteRegistry {
   }
 
   getCoverageStats() {
+    const satellites = [];
     let cells = 0;
-    let rollDeg = 0;
     for (const sat of this.satellites.values()) {
       cells += sat.coverageCellCount;
-      rollDeg = sat.currentRollDeg;
+      satellites.push({
+        id: sat.config.id,
+        name: sat.config.name,
+        rollDeg: sat.currentRollDeg,
+        swathCount: sat.swathCount,
+      });
     }
-    return { cells, rollDeg };
+    return { cells, satellites };
   }
 
   destroyAll() {
@@ -69,6 +74,11 @@ export class SatelliteRegistry {
 
   resetAll() {
     const configs = [...this.satellites.values()].map((s) => s.config);
+    this.destroyAll();
+    this.registerAll(configs);
+  }
+
+  replaceAll(configs) {
     this.destroyAll();
     this.registerAll(configs);
   }

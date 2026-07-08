@@ -43,7 +43,7 @@ body {
   top: 12px;
   left: 12px;
   z-index: 10;
-  width: 250px;
+  width: 280px;
   padding: 14px 16px;
   border-radius: 10px;
   background: rgba(12, 18, 28, 0.82);
@@ -122,6 +122,70 @@ body {
   font-size: 10px;
   line-height: 1.45;
   color: #7a90a8;
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: #9fb0c8;
+}
+
+.settings-input {
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.35);
+  color: #e8eef7;
+  font-size: 12px;
+}
+
+.settings-input:focus {
+  outline: none;
+  border-color: rgba(0, 200, 240, 0.5);
+}
+
+.settings-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #b8c9e0;
+  cursor: pointer;
+}
+
+.settings-toggle input {
+  accent-color: #00c8f0;
+}
+
+.settings-apply {
+  margin-top: 2px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 200, 240, 0.45);
+  background: rgba(0, 170, 210, 0.18);
+  color: #7ee8ff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.settings-apply:hover:not(:disabled) {
+  background: rgba(0, 170, 210, 0.3);
+}
+
+.settings-apply:disabled {
+  opacity: 0.55;
+  cursor: wait;
 }
 
 .view-toggle {

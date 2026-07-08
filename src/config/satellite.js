@@ -39,52 +39,88 @@ export const CHINA_BOUNDS = {
   north: 53,
 };
 
-export const DEFAULT_SATELLITES = [
-  {
-    id: 'sat-1',
-    name: '卫星 A',
-    orbit: {
-      type: 'sun-sync',
-      altitudeKm: 500,
-      inclinationDeg: 97.4,
-      /** 沿晨昏轨道的初始相位（度）；RAAN 由当前太阳方向自动确定 */
-      initialPhaseDeg: 0,
-    },
-    sensor: {
-      /** 传感器视场地面幅宽（km） */
-      swathWidthKm: 60,
-      maxRollDeg: 30,
-      rollDeg: 0,
-      coverageCellDeg: 0.05,
-    },
-    fade: {
-      cycleDays: 30,
-      freshDays: 1,
-    },
-    appearance: {
-      pointColor: '#00FFFF',
-      pointSize: 14,
-      /** 3D 模型：本地 glb 超过 maxLocalSizeMb 时自动改用 Ion */
-      model: {
-        localUri: `${import.meta.env.BASE_URL}models/satellite.glb`,
-        maxLocalSizeMb: 12,
-        ionAssetIds: [5015623],
-        scale: 1,
-        /** 屏幕固定尺寸（约 24px 的 1.75 倍） */
-        minimumPixelSize: 42,
-        maximumPixelSize: 42,
-        /** 模型网格轴微调（度），默认已对地 */
-        pitchDeg: 0,
-        rollDeg: 0,
-        yawDeg: 0,
+/** 可调参数范围 */
+export const PARAM_LIMITS = {
+  altitudeKm: { min: 400, max: 800, step: 10, default: 500 },
+  swathWidthKm: { min: 20, max: 120, step: 5, default: 60 },
+};
+
+const SHARED_MODEL = {
+  localUri: `${import.meta.env.BASE_URL}models/satellite.glb`,
+  maxLocalSizeMb: 12,
+  ionAssetIds: [5015623],
+  scale: 1,
+  minimumPixelSize: 42,
+  maximumPixelSize: 42,
+  pitchDeg: 0,
+  rollDeg: 0,
+  yawDeg: 0,
+};
+
+/**
+ * @param {{ altitudeKm: number, swathWidthKm: number, hideAfterCycle?: boolean }} params
+ */
+export function buildSatelliteConfigs({
+  altitudeKm,
+  swathWidthKm,
+  hideAfterCycle = true,
+}) {
+  const orbitBase = {
+    type: 'sun-sync',
+    altitudeKm,
+    inclinationDeg: 97.4,
+  };
+  const sensor = {
+    swathWidthKm,
+    maxRollDeg: 30,
+    rollDeg: 0,
+    coverageCellDeg: 0.05,
+  };
+  const fade = {
+    cycleDays: 30,
+    freshDays: 1,
+    /** true: 30 天后隐藏；false: 保留白→灰梯度但不消失 */
+    hideAfterCycle,
+  };
+
+  return [
+    {
+      id: 'sat-1',
+      name: '卫星 A',
+      orbit: { ...orbitBase, initialPhaseDeg: 0 },
+      sensor: { ...sensor },
+      fade: { ...fade },
+      appearance: {
+        pointColor: '#00FFFF',
+        pointSize: 14,
+        model: { ...SHARED_MODEL },
+        sensorCone: { footprintScale: 0.55 },
       },
-      sensorCone: {
-        /** 瞬时高亮 footprint 相对幅宽 */
-        footprintScale: 0.55,
+    },
+    {
+      id: 'sat-2',
+      name: '卫星 B',
+      orbit: { ...orbitBase, initialPhaseDeg: 180 },
+      sensor: { ...sensor },
+      fade: { ...fade },
+      appearance: {
+        pointColor: '#FF9A5C',
+        pointSize: 14,
+        model: { ...SHARED_MODEL },
+        sensorCone: { footprintScale: 0.55 },
       },
     },
-  },
-];
+  ];
+}
+
+/** 默认双星配置 */
+export const DEFAULT_SIM_PARAMS = {
+  altitudeKm: PARAM_LIMITS.altitudeKm.default,
+  swathWidthKm: PARAM_LIMITS.swathWidthKm.default,
+  hideAfterCycle: true,
+};
+
+export const DEFAULT_SATELLITES = buildSatelliteConfigs(DEFAULT_SIM_PARAMS);
 
 /** 星下点移动超过此距离（米）时追加条带 */
 export const SWATH_SAMPLE_INTERVAL_M = 150;

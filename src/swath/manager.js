@@ -5,7 +5,7 @@ import {
   bridgeSwathTransition,
   chainsToStripInstances,
 } from './geometry.js';
-import { swathColorForAge, fadeColorBucket, secondsToDays } from './fade.js';
+import { swathColorForAge, fadeColorBucket, secondsToDays, shouldHideSwath } from './fade.js';
 import { SWATH_SAMPLE_INTERVAL_M } from '../config/satellite.js';
 
 const {
@@ -200,7 +200,7 @@ export class SwathManager {
       );
       const ageDays = secondsToDays(ageSec);
       const color = swathColorForAge(ageDays, this.fadeConfig);
-      if (color.alpha < 0.01) continue;
+      if (shouldHideSwath(ageDays, this.fadeConfig)) continue;
 
       const primitive = this._buildStripFromChains(pass.cachedChains, color);
       if (primitive) {
@@ -318,7 +318,7 @@ export class SwathManager {
       const ageDays = secondsToDays(ageSec);
       const color = swathColorForAge(ageDays, this.fadeConfig);
 
-      if (color.alpha < 0.01) {
+      if (shouldHideSwath(ageDays, this.fadeConfig)) {
         this._destroyPrimitive(pass.primitive);
         this.completedPasses.splice(i, 1);
         continue;

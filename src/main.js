@@ -7,12 +7,18 @@ import {
 } from './core/viewer.js';
 import { CameraController } from './core/cameraController.js';
 import { SimClock, getOrbitEpoch } from './core/simClock.js';
-import { TIME_CONTROL, SIMULATION } from './config/satellite.js';
-import { DEFAULT_SATELLITES } from './config/satellite.js';
+import {
+  TIME_CONTROL,
+  SIMULATION,
+  DEFAULT_SIM_PARAMS,
+  DEFAULT_SATELLITES,
+  buildSatelliteConfigs,
+} from './config/satellite.js';
 import { SatelliteRegistry } from './satellites/registry.js';
 import { orbitalPeriodSeconds, ensureIcrfReady } from './orbit/propagate.js';
 import { TimeControls } from './ui/timeControls.js';
 import { DayJumpControls } from './ui/dayJumpControls.js';
+import { SimSettingsControls } from './ui/simSettingsControls.js';
 import './style.css';
 
 const { JulianDate } = Cesium;
@@ -20,21 +26,37 @@ const { JulianDate } = Cesium;
 /** 后台每步最大仿真推进（秒） */
 const BG_SIM_CHUNK_SEC = 90;
 
-function renderParamDisplay(registry, simClock) {
-  const sat = DEFAULT_SATELLITES[0];
-  const periodMin = (orbitalPeriodSeconds(sat.orbit.altitudeKm) / 60).toFixed(1);
-  const stats = registry?.getCoverageStats() ?? { cells: 0, rollDeg: 0 };
+function renderParamDisplay(registry, simClock, simParams) {
+  const primary =
+    registry?.satellites?.values().next().value?.config ?? null;
+  const altitudeKm = primary?.orbit?.altitudeKm ?? simParams.altitudeKm;
+  const swathWidthKm =
+    primary?.sensor?.swathWidthKm ?? simParams.swathWidthKm;
+  const periodMin = (orbitalPeriodSeconds(altitudeKm) / 60).toFixed(1);
+  const stats = registry?.getCoverageStats() ?? {
+    cells: 0,
+    satellites: [],
+  };
   const simDays = simClock?.getElapsedSimDays?.()?.toFixed(1) ?? '0.0';
+
   const rows = [
     ['轨道类型', '晨昏轨道（太阳同步）'],
-    ['轨道高度', `${sat.orbit.altitudeKm} km`],
-    ['传感器视场', `${sat.sensor.swathWidthKm} km`],
+    ['卫星数量', `${stats.satellites.length || 2} 颗（相位差 180°）`],
+    ['轨道高度', `${altitudeKm} km`],
+    ['传感器视场', `${swathWidthKm} km`],
     ['偏转策略', '已覆盖触发，本圈锁角（0–30°）'],
-    ['当前偏转角', `${stats.rollDeg.toFixed(1)}°`],
+    [
+      '褪色',
+      simParams.hideAfterCycle ? '30 天后隐藏' : '保留渐变不消失',
+    ],
     ['轨道周期', `约 ${periodMin} 分钟/圈`],
     ['仿真天数', `${simDays} 天`],
     ['覆盖栅格', `${stats.cells.toLocaleString()} 格`],
   ];
+
+  for (const sat of stats.satellites) {
+    rows.push([`${sat.name} 偏转角`, `${sat.rollDeg.toFixed(1)}°`]);
+  }
 
   document.getElementById('paramDisplay').innerHTML = rows
     .map(
@@ -44,7 +66,8 @@ function renderParamDisplay(registry, simClock) {
     .join('');
 }
 
-function startSimulationLoop(viewer, simClock, registry, timeControls, { isJumping }) {
+function startSimulationLoop(viewer, simClock, registry, timeControls, ctx) {
+  const { isJumping, getSimParams } = ctx;
   let lastWall = performance.now();
   let lastBgWall = Date.now();
   let lastUiRefresh = 0;
@@ -87,7 +110,7 @@ function startSimulationLoop(viewer, simClock, registry, timeControls, { isJumpi
 
       if (now - lastUiRefresh > 1000) {
         timeControls.refresh();
-        renderParamDisplay(registry, simClock);
+        renderParamDisplay(registry, simClock, getSimParams());
         lastUiRefresh = now;
       }
       viewer.scene.requestRender();
@@ -130,8 +153,33 @@ function startSimulationLoop(viewer, simClock, registry, timeControls, { isJumpi
   requestAnimationFrame(frame);
 }
 
+async function applySimSettings(nextParams, ctx) {
+  const { simClock, registry, viewer, timeControls, loadingEl } = ctx;
+
+  if (loadingEl) {
+    loadingEl.textContent = '正在应用新参数…';
+    loadingEl.classList.remove('hidden');
+  }
+
+  simClock.live = false;
+  simClock.markSimAnchor();
+  simClock.jumpToSimDays(0);
+
+  const configs = buildSatelliteConfigs(nextParams);
+  registry.replaceAll(configs);
+  await registry.loadAllModels();
+
+  simClock.syncToViewer(viewer);
+  registry.updateAll(simClock.currentTime);
+  timeControls?.refresh();
+  viewer.scene.requestRender();
+
+  if (loadingEl) loadingEl.classList.add('hidden');
+}
+
 async function main() {
   const loadingEl = document.getElementById('loadingOverlay');
+  const simParams = { ...DEFAULT_SIM_PARAMS };
 
   try {
     const viewer = createViewer('cesiumContainer');
@@ -179,7 +227,7 @@ async function main() {
     const onTimeChange = () => {
       simClock.syncToViewer(viewer);
       registry.updateAll(simClock.currentTime);
-      renderParamDisplay(registry, simClock);
+      renderParamDisplay(registry, simClock, simParams);
       viewer.scene.requestRender();
     };
 
@@ -201,13 +249,31 @@ async function main() {
       },
       onJumpComplete: () => {
         timeControls.refresh();
-        renderParamDisplay(registry, simClock);
+        renderParamDisplay(registry, simClock, simParams);
       },
     });
 
-    startSimulationLoop(viewer, simClock, registry, timeControls, { isJumping });
+    new SimSettingsControls({
+      initialParams: simParams,
+      onApply: async (next) => {
+        Object.assign(simParams, next);
+        await applySimSettings(next, {
+          simClock,
+          registry,
+          viewer,
+          timeControls,
+          loadingEl,
+        });
+        renderParamDisplay(registry, simClock, simParams);
+      },
+    });
 
-    renderParamDisplay(registry, simClock);
+    startSimulationLoop(viewer, simClock, registry, timeControls, {
+      isJumping,
+      getSimParams: () => simParams,
+    });
+
+    renderParamDisplay(registry, simClock, simParams);
   } catch (err) {
     console.error(err);
     if (loadingEl) loadingEl.classList.add('hidden');
