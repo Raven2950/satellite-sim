@@ -33,10 +33,7 @@ function renderParamDisplay(registry, simClock, simParams) {
   const swathWidthKm =
     primary?.sensor?.swathWidthKm ?? simParams.swathWidthKm;
   const periodMin = (orbitalPeriodSeconds(altitudeKm) / 60).toFixed(1);
-  const stats = registry?.getCoverageStats() ?? {
-    cells: 0,
-    satellites: [],
-  };
+  const stats = registry?.getCoverageStats() ?? { satellites: [] };
   const simDays = simClock?.getElapsedSimDays?.()?.toFixed(1) ?? '0.0';
 
   const rows = [
@@ -44,19 +41,9 @@ function renderParamDisplay(registry, simClock, simParams) {
     ['卫星数量', `${stats.satellites.length || 2} 颗（相位差 180°）`],
     ['轨道高度', `${altitudeKm} km`],
     ['传感器视场', `${swathWidthKm} km`],
-    ['偏转策略', '已覆盖触发，本圈锁角（0–30°）'],
-    [
-      '褪色',
-      simParams.hideAfterCycle ? '30 天后隐藏' : '保留渐变不消失',
-    ],
     ['轨道周期', `约 ${periodMin} 分钟/圈`],
     ['仿真天数', `${simDays} 天`],
-    ['覆盖栅格', `${stats.cells.toLocaleString()} 格`],
   ];
-
-  for (const sat of stats.satellites) {
-    rows.push([`${sat.name} 偏转角`, `${sat.rollDeg.toFixed(1)}°`]);
-  }
 
   document.getElementById('paramDisplay').innerHTML = rows
     .map(
