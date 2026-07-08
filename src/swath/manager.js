@@ -2,6 +2,7 @@ import * as Cesium from 'cesium';
 import {
   sampleGroundTrackPath,
   sampleOrbitSwathChains,
+  bridgeSwathTransition,
   chainsToStripInstances,
 } from './geometry.js';
 import { swathColorForAge, fadeColorBucket, secondsToDays } from './fade.js';
@@ -65,6 +66,7 @@ export class SwathManager {
     orbitPeriodSec,
     swathGround,
     isRolled = false,
+    nadirGround = null,
   ) {
     if (this._passStartSec === null) {
       this.beginPass(currentTime, currentSec);
@@ -85,6 +87,16 @@ export class SwathManager {
         if (this._activePoints.length >= 2) {
           this._activeChains.push(this._activePoints);
         }
+        if (!this._activeRolled && isRolled && nadirGround) {
+          const bridge = bridgeSwathTransition(
+            nadirGround,
+            swathGround,
+            this.ellipsoid,
+          );
+          if (bridge.length >= 2) {
+            this._activeChains.push(bridge);
+          }
+        }
         this._activePoints = [];
       }
       this._activeRolled = isRolled;
@@ -93,6 +105,16 @@ export class SwathManager {
     }
 
     this._lastSec = currentSec;
+  }
+
+  _collectActiveChains() {
+    const chains = this._activeChains.map((c) =>
+      c.map((p) => Cartesian3.clone(p)),
+    );
+    if (this._activePoints.length >= 2) {
+      chains.push(this._activePoints.map((p) => Cartesian3.clone(p)));
+    }
+    return chains;
   }
 
   _rebuildActiveChains() {
@@ -202,8 +224,11 @@ export class SwathManager {
   finalizePass(orbitPeriodSec, coveragePlanner) {
     if (this._passStartSec === null) return;
 
-    const chains = coveragePlanner
-      ? sampleOrbitSwathChains(
+    const chains = this._collectActiveChains();
+
+    if (chains.length === 0 && coveragePlanner) {
+      chains.push(
+        ...sampleOrbitSwathChains(
           this._passStartSec,
           orbitPeriodSec,
           this.orbitConfig,
@@ -212,16 +237,9 @@ export class SwathManager {
           this.ellipsoid,
           this.orbitEpoch,
           { markGrid: false },
-        )
-      : sampleGroundTrackPath(
-          this._passStartSec,
-          this._passStartSec + orbitPeriodSec,
-          orbitPeriodSec,
-          this.orbitConfig,
-          { ...this.sensorConfig, rollDeg: 0 },
-          this.ellipsoid,
-          this.orbitEpoch,
-        );
+        ),
+      );
+    }
 
     this._destroyPrimitive(this.activePrimitive);
     this.activePrimitive = null;

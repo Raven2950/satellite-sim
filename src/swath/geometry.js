@@ -96,6 +96,23 @@ function _splitAtDiscontinuities(points) {
   return chains;
 }
 
+/** 对地→偏转切换处：沿球面短过渡，避免 A/B 段之间视觉断点 */
+export function bridgeSwathTransition(fromGround, toGround, ellipsoid, steps = 6) {
+  if (Cartesian3.distance(fromGround, toGround) < 1) {
+    return [Cartesian3.clone(fromGround), Cartesian3.clone(toGround)];
+  }
+
+  const points = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const raw = Cartesian3.lerp(fromGround, toGround, t, new Cartesian3());
+    const carto = ellipsoid.cartesianToCartographic(raw);
+    carto.height = 0;
+    points.push(ellipsoid.cartographicToCartesian(carto));
+  }
+  return points;
+}
+
 /**
  * 采样一整圈白痕链：对地段 + 触发后锁角偏转段（分段，避免 A→B 拉直线）
  */
@@ -118,6 +135,7 @@ export function sampleOrbitSwathChains(
   const chains = [];
   let chain = [];
   let prevRolled = false;
+  let prevNadir = null;
 
   for (let t = passStartSec; t <= endSec + stepSec * 0.01; t += stepSec) {
     const sec = Math.min(t, endSec);
@@ -137,11 +155,20 @@ export function sampleOrbitSwathChains(
 
     if (chain.length > 0 && plan.isRolled !== prevRolled) {
       if (chain.length >= 2) chains.push(chain);
+      if (!prevRolled && plan.isRolled && prevNadir) {
+        const bridge = bridgeSwathTransition(
+          prevNadir,
+          plan.swathGround,
+          ellipsoid,
+        );
+        if (bridge.length >= 2) chains.push(bridge);
+      }
       chain = [];
     }
 
     chain.push(Cartesian3.clone(plan.swathGround));
     prevRolled = plan.isRolled;
+    prevNadir = nadir;
 
     if (sec >= endSec) break;
   }

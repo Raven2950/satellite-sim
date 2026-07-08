@@ -143,6 +143,7 @@ export class Satellite {
         this.orbitPeriodSec,
         imaging.swathGround,
         imaging.isRolled,
+        imaging.nadirGround,
       );
     }
 
@@ -192,6 +193,7 @@ export class Satellite {
         this.orbitPeriodSec,
         lastImaging.swathGround,
         lastImaging.isRolled,
+        lastImaging.nadirGround,
       );
       if (sec >= toSec) break;
     }
