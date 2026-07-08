@@ -29,7 +29,7 @@ function renderParamDisplay(registry, simClock) {
     ['轨道类型', '晨昏轨道（太阳同步）'],
     ['轨道高度', `${sat.orbit.altitudeKm} km`],
     ['传感器视场', `${sat.sensor.swathWidthKm} km`],
-    ['偏转策略', '重叠避让 + 缺口补扫（0–30°）'],
+    ['偏转策略', '已覆盖触发，本圈锁角（0–30°）'],
     ['当前偏转角', `${stats.rollDeg.toFixed(1)}°`],
     ['轨道周期', `约 ${periodMin} 分钟/圈`],
     ['仿真天数', `${simDays} 天`],

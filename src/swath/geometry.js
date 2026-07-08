@@ -77,7 +77,7 @@ export function sampleGroundTrackPath(
 }
 
 function _splitAtDiscontinuities(points) {
-  if (points.length < 2) return [points];
+  if (points.length < 2) return points.length ? [points] : [];
 
   const chains = [];
   let chain = [Cartesian3.clone(points[0])];
@@ -97,8 +97,7 @@ function _splitAtDiscontinuities(points) {
 }
 
 /**
- * 采样一整圈成像轨迹（对地 + 缺口补扫偏转），返回可绘制条带链
- * @param {boolean} [options.markGrid=true] true 时写入覆盖栅格（跳转离线）；false 仅几何（finalize 重采样）
+ * 采样一整圈白痕链：对地段 + 触发后锁角偏转段（分段，避免 A→B 拉直线）
  */
 export function sampleOrbitSwathChains(
   passStartSec,
@@ -113,9 +112,12 @@ export function sampleOrbitSwathChains(
   const nadirSensor = { ...sensorConfig, rollDeg: 0 };
   const stepSec = orbitPeriodSec / samplesPerOrbit;
   const endSec = passStartSec + orbitPeriodSec;
-  const nadirPoints = [];
-  const rollChains = [];
-  let rollChain = [];
+
+  coveragePlanner.beginPass();
+
+  const chains = [];
+  let chain = [];
+  let prevRolled = false;
 
   for (let t = passStartSec; t <= endSec + stepSec * 0.01; t += stepSec) {
     const sec = Math.min(t, endSec);
@@ -129,42 +131,24 @@ export function sampleOrbitSwathChains(
       ellipsoid,
     );
 
-    let rollGround = null;
-    if (markGrid) {
-      const plan = coveragePlanner.planImaging(jd, sec, nadir, vel, ellipsoid);
-      rollGround = plan.rollGround;
-    } else {
-      const sample = coveragePlanner.sampleSwathPoints(
-        jd,
-        sec,
-        nadir,
-        vel,
-        ellipsoid,
-      );
-      rollGround = sample.rollGround;
+    const plan = coveragePlanner.planImaging(jd, sec, nadir, vel, ellipsoid, {
+      markGrid,
+    });
+
+    if (chain.length > 0 && plan.isRolled !== prevRolled) {
+      if (chain.length >= 2) chains.push(chain);
+      chain = [];
     }
 
-    nadirPoints.push(nadir);
-    if (rollGround) {
-      rollChain.push(rollGround);
-    } else if (rollChain.length >= 2) {
-      rollChains.push(rollChain);
-      rollChain = [];
-    } else {
-      rollChain = [];
-    }
+    chain.push(Cartesian3.clone(plan.swathGround));
+    prevRolled = plan.isRolled;
+
     if (sec >= endSec) break;
   }
 
-  if (rollChain.length >= 2) {
-    rollChains.push(rollChain);
-  }
+  if (chain.length >= 2) chains.push(chain);
 
-  const splitRollChains = rollChains.flatMap((chain) =>
-    _splitAtDiscontinuities(chain),
-  );
-
-  return [..._splitAtDiscontinuities(nadirPoints), ...splitRollChains];
+  return chains.flatMap((c) => _splitAtDiscontinuities(c));
 }
 
 /** 将多段 ground chain 合并为条带 primitive 所需点列 */

@@ -56,10 +56,6 @@ export const DEFAULT_SATELLITES = [
       maxRollDeg: 30,
       rollDeg: 0,
       coverageCellDeg: 0.05,
-      /** 条带外缘向外搜索缺口的窄带宽度（m） */
-      gapSearchBandM: 20_000,
-      /** 沿轨向后搜索长度（m） */
-      gapSearchBehindM: 80_000,
     },
     fade: {
       cycleDays: 30,

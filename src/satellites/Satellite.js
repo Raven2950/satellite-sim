@@ -141,8 +141,8 @@ export class Satellite {
         currentTime,
         sec,
         this.orbitPeriodSec,
-        imaging.nadirGround,
-        imaging.rollGround,
+        imaging.swathGround,
+        imaging.isRolled,
       );
     }
 
@@ -190,8 +190,8 @@ export class Satellite {
         jd,
         sec,
         this.orbitPeriodSec,
-        lastImaging.nadirGround,
-        lastImaging.rollGround,
+        lastImaging.swathGround,
+        lastImaging.isRolled,
       );
       if (sec >= toSec) break;
     }
@@ -199,8 +199,9 @@ export class Satellite {
     return (
       lastImaging ?? {
         nadirGround: null,
-        rollGround: null,
+        swathGround: null,
         rollDeg: this.coveragePlanner.currentRollDeg,
+        isRolled: false,
       }
     );
   }

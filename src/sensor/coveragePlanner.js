@@ -62,20 +62,6 @@ export class CoverageGrid {
     }
   }
 
-  /** 该点邻域内是否存在已覆盖栅格（条带边缘缺口判定） */
-  hasCoveredNeighbor(latDeg, lonDeg, radiusDeg) {
-    const steps = Math.max(1, Math.ceil(radiusDeg / this.cellDeg));
-    for (let di = -steps; di <= steps; di++) {
-      for (let dj = -steps; dj <= steps; dj++) {
-        if (di === 0 && dj === 0) continue;
-        if (this.isCovered(latDeg + di * this.cellDeg, lonDeg + dj * this.cellDeg)) {
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
   get coveredCellCount() {
     return this.covered.size;
   }
@@ -90,10 +76,9 @@ const _scratchCross = new Cartesian3();
 const _scratchUp = new Cartesian3();
 const _scratchOffset = new Cartesian3();
 const _scratchTarget = new Cartesian3();
-const _scratchSurf = new Cartesian3();
 
 /**
- * 策略 A：默认对地；仅在当前轨迹后方、紧贴已扫条带边缘的未覆盖缺口处偏转补扫
+ * 默认对地；星下点进入已扫区域时锁定偏转角至本圈结束（仅影响白痕栅格/HUD）
  */
 export class CoveragePlanner {
   constructor(orbitConfig, sensorConfig) {
@@ -105,99 +90,91 @@ export class CoveragePlanner {
     this.maxRollDeg = sensorConfig.maxRollDeg ?? 30;
     this.maxCrossM =
       this.altitudeM * Math.tan(CesiumMath.toRadians(this.maxRollDeg));
-    /** 仅在条带外缘再向外搜索的窄带（米） */
-    this.gapBandM = sensorConfig.gapSearchBandM ?? 20_000;
-    /** 沿轨向后搜索长度（米） */
-    this.behindAlongM = sensorConfig.gapSearchBehindM ?? 80_000;
-    this._prevNadir = null;
+    this._prevSwath = null;
+    this._passRollDeg = 0;
+    this._passRollLocked = false;
     this.currentRollDeg = 0;
-    this.lastGapFill = false;
   }
 
   reset() {
     this.grid.clear();
-    this._prevNadir = null;
+    this._prevSwath = null;
+    this._passRollDeg = 0;
+    this._passRollLocked = false;
     this.currentRollDeg = 0;
-    this.lastGapFill = false;
+  }
+
+  /** 每圈开始时重置段内偏转状态 */
+  beginPass() {
+    this._passRollDeg = 0;
+    this._passRollLocked = false;
+    this.currentRollDeg = 0;
+    this._prevSwath = null;
   }
 
   /**
-   * @returns {{ nadirGround, rollGround: Cartesian3|null, rollDeg: number }}
+   * @returns {{ nadirGround, swathGround, rollDeg: number, isRolled: boolean }}
    */
-  planImaging(julianDate, secondsSinceEpoch, nadirGround, vel, ellipsoid) {
-    if (this._prevNadir) {
-      this.grid.markSegment(
-        this._prevNadir,
-        nadirGround,
-        this.halfSwathM,
-        ellipsoid,
-      );
-    } else {
-      this.grid.markFootprint(nadirGround, this.halfSwathM, ellipsoid);
+  planImaging(
+    julianDate,
+    secondsSinceEpoch,
+    nadirGround,
+    vel,
+    ellipsoid,
+    { markGrid = true } = {},
+  ) {
+    const nadirCovered = this.grid.isCoveredAtCartesian(nadirGround, ellipsoid);
+
+    if (!this._passRollLocked && nadirCovered) {
+      const rollDeg = this._pickRollAngle(nadirGround, vel, ellipsoid);
+      if (rollDeg !== null) {
+        this._passRollDeg = rollDeg;
+        this._passRollLocked = true;
+      }
     }
-    this._prevNadir = Cartesian3.clone(
-      nadirGround,
-      this._prevNadir ?? new Cartesian3(),
-    );
 
-    const rollPlan = this._findBestGapTarget(nadirGround, vel, ellipsoid);
-    this.lastGapFill = Boolean(rollPlan);
-    this.currentRollDeg = rollPlan?.rollDeg ?? 0;
+    this.currentRollDeg = this._passRollLocked ? this._passRollDeg : 0;
 
-    let rollGround = null;
-    if (rollPlan) {
-      rollGround = computeGroundCartesian(
+    let swathGround = nadirGround;
+    if (this._passRollLocked && Math.abs(this._passRollDeg) > 0.01) {
+      swathGround = computeGroundCartesian(
         julianDate,
         secondsSinceEpoch,
         this.orbitConfig,
-        { ...this.sensorConfig, rollDeg: rollPlan.rollDeg },
+        { ...this.sensorConfig, rollDeg: this._passRollDeg },
         ellipsoid,
       );
-      this.grid.markFootprint(rollGround, this.halfSwathM, ellipsoid);
+    }
+
+    if (markGrid) {
+      if (this._prevSwath) {
+        this.grid.markSegment(
+          this._prevSwath,
+          swathGround,
+          this.halfSwathM,
+          ellipsoid,
+        );
+      } else {
+        this.grid.markFootprint(swathGround, this.halfSwathM, ellipsoid);
+      }
+      this._prevSwath = Cartesian3.clone(
+        swathGround,
+        this._prevSwath ?? new Cartesian3(),
+      );
     }
 
     return {
       nadirGround,
-      rollGround,
+      swathGround,
       rollDeg: this.currentRollDeg,
+      isRolled: this._passRollLocked && Math.abs(this._passRollDeg) > 0.01,
     };
   }
 
-  /**
-   * 仅用于条带几何稠密重采样：不写入覆盖栅格，避免 finalize 重复标记
-   */
-  sampleSwathPoints(julianDate, secondsSinceEpoch, nadirGround, vel, ellipsoid) {
-    const rollPlan = this._findBestGapTarget(nadirGround, vel, ellipsoid);
-    this.lastGapFill = Boolean(rollPlan);
-    this.currentRollDeg = rollPlan?.rollDeg ?? 0;
+  /** 触发时一次性选择侧向偏转，指向邻近未覆盖区 */
+  _pickRollAngle(nadirGround, vel, ellipsoid) {
+    if (this.maxRollDeg < 0.5) return null;
 
-    let rollGround = null;
-    if (rollPlan) {
-      rollGround = computeGroundCartesian(
-        julianDate,
-        secondsSinceEpoch,
-        this.orbitConfig,
-        { ...this.sensorConfig, rollDeg: rollPlan.rollDeg },
-        ellipsoid,
-      );
-    }
-
-    this._prevNadir = Cartesian3.clone(
-      nadirGround,
-      this._prevNadir ?? new Cartesian3(),
-    );
-
-    return {
-      nadirGround,
-      rollGround,
-      rollDeg: this.currentRollDeg,
-    };
-  }
-
-  /**
-   * 星下点落在已扫区域时：侧向偏转，把视场移到邻近未覆盖区
-   */
-  _findOverlapAvoidanceRoll(nadirGround, vel, ellipsoid) {
     const up = ellipsoid.geodeticSurfaceNormal(nadirGround, _scratchUp);
     let along = Cartesian3.cross(up, vel, _scratchAlong);
     if (Cartesian3.magnitudeSquared(along) < 1e-6) {
@@ -209,8 +186,8 @@ export class CoveragePlanner {
     Cartesian3.normalize(cross, cross);
 
     const crossSteps = 8;
-    const minCross = this.halfSwathM * 0.25;
-    const maxCross = Math.min(this.maxCrossM, this.halfSwathM * 2.5);
+    const minCross = this.halfSwathM * 0.5;
+    const maxCross = Math.min(this.maxCrossM, this.halfSwathM * 2);
 
     for (let ci = 1; ci <= crossSteps; ci++) {
       const crossDist = minCross + ((maxCross - minCross) * ci) / crossSteps;
@@ -221,10 +198,9 @@ export class CoveragePlanner {
           _scratchOffset,
         );
         const raw = Cartesian3.add(nadirGround, offset, _scratchTarget);
-        const carto = ellipsoid.cartesianToCartographic(raw);
-        carto.height = 0;
-        const lat = CesiumMath.toDegrees(carto.latitude);
-        const lon = CesiumMath.toDegrees(carto.longitude);
+        const c = ellipsoid.cartesianToCartographic(raw);
+        const lat = CesiumMath.toDegrees(c.latitude);
+        const lon = CesiumMath.toDegrees(c.longitude);
 
         if (this.grid.isCovered(lat, lon)) continue;
 
@@ -232,99 +208,10 @@ export class CoveragePlanner {
           side * CesiumMath.toDegrees(Math.atan2(crossDist, this.altitudeM));
         if (Math.abs(rollDeg) > this.maxRollDeg + 0.01) continue;
 
-        return { rollDeg };
+        return rollDeg;
       }
     }
 
     return null;
-  }
-
-  /**
-   * 仅在「当前轨迹后方 + 条带外缘窄带 + 邻接已覆盖区」的未覆盖点中择优
-   */
-  _findEdgeGapRoll(nadirGround, vel, ellipsoid) {
-    const up = ellipsoid.geodeticSurfaceNormal(nadirGround, _scratchUp);
-    let along = Cartesian3.cross(up, vel, _scratchAlong);
-    if (Cartesian3.magnitudeSquared(along) < 1e-6) {
-      along = Cartesian3.cross(up, Cartesian3.UNIT_X, _scratchAlong);
-    }
-    Cartesian3.normalize(along, along);
-
-    const cross = Cartesian3.cross(up, along, _scratchCross);
-    Cartesian3.normalize(cross, cross);
-
-    const minCross = this.halfSwathM * 0.98;
-    const maxCross = Math.min(
-      this.halfSwathM + this.gapBandM,
-      this.maxCrossM,
-    );
-    if (maxCross <= minCross) return null;
-
-    const behindM = this.behindAlongM;
-    const alongSteps = 10;
-    const crossSteps = 6;
-    const neighborRadiusDeg = (this.halfSwathM * 0.15) / M_PER_DEG_LAT;
-
-    let best = null;
-    let bestScore = -1;
-
-    for (let ai = 1; ai <= alongSteps; ai++) {
-      const alongDist = (-behindM * ai) / alongSteps;
-      for (const side of [-1, 1]) {
-        for (let ci = 1; ci <= crossSteps; ci++) {
-          const crossDist =
-            minCross + ((maxCross - minCross) * ci) / crossSteps;
-
-          const offset = Cartesian3.add(
-            Cartesian3.multiplyByScalar(along, alongDist, new Cartesian3()),
-            Cartesian3.multiplyByScalar(
-              cross,
-              side * crossDist,
-              new Cartesian3(),
-            ),
-            _scratchOffset,
-          );
-          const raw = Cartesian3.add(nadirGround, offset, _scratchTarget);
-          const carto = ellipsoid.cartesianToCartographic(raw);
-          carto.height = 0;
-
-          const lat = CesiumMath.toDegrees(carto.latitude);
-          const lon = CesiumMath.toDegrees(carto.longitude);
-
-          if (this.grid.isCovered(lat, lon)) continue;
-          if (!this.grid.hasCoveredNeighbor(lat, lon, neighborRadiusDeg)) {
-            continue;
-          }
-
-          const rollDeg =
-            side *
-            CesiumMath.toDegrees(Math.atan2(crossDist, this.altitudeM));
-          if (Math.abs(rollDeg) > this.maxRollDeg + 0.01) continue;
-
-          const score = 1 / crossDist + ai * 0.001;
-          if (score > bestScore) {
-            bestScore = score;
-            best = { rollDeg };
-          }
-        }
-      }
-    }
-
-    return best;
-  }
-
-  _findBestGapTarget(nadirGround, vel, ellipsoid) {
-    if (this.maxRollDeg < 0.5 || !this._prevNadir) return null;
-
-    if (this.grid.isCoveredAtCartesian(nadirGround, ellipsoid)) {
-      const overlapRoll = this._findOverlapAvoidanceRoll(
-        nadirGround,
-        vel,
-        ellipsoid,
-      );
-      if (overlapRoll) return overlapRoll;
-    }
-
-    return this._findEdgeGapRoll(nadirGround, vel, ellipsoid);
   }
 }

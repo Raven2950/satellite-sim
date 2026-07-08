@@ -36,13 +36,14 @@ export class SwathManager {
     this.completedPasses = [];
     this._pendingPasses = [];
     this.activePrimitive = null;
+    this._activeChains = [];
     this._activePoints = [];
-    this._activeRollPoints = [];
     this.passStartTime = null;
     this._passStartSec = null;
     this._lastSec = null;
     this._lastFadeWallMs = 0;
     this._coveragePlanner = null;
+    this._activeRolled = false;
     this._activeColor = swathColorForAge(0, fadeConfig);
   }
 
@@ -51,17 +52,19 @@ export class SwathManager {
     this._passStartSec = sec;
     this._destroyPrimitive(this.activePrimitive);
     this.activePrimitive = null;
+    this._activeChains = [];
     this._activePoints = [];
-    this._activeRollPoints = [];
+    this._activeRolled = false;
+    this._coveragePlanner?.beginPass();
   }
 
-  /** 当前圈：每帧延伸到星下点（含偏转补扫轨迹） */
+  /** 当前圈：沿实际成像地面点延伸（对地或锁角偏转） */
   updateActivePass(
     currentTime,
     currentSec,
     orbitPeriodSec,
-    nadirGround,
-    rollGround = null,
+    swathGround,
+    isRolled = false,
   ) {
     if (this._passStartSec === null) {
       this.beginPass(currentTime, currentSec);
@@ -77,35 +80,27 @@ export class SwathManager {
       this.beginPass(currentTime, currentSec);
     }
 
-    if (nadirGround) {
-      this._advanceActivePoints(nadirGround, this._activePoints);
+    if (swathGround) {
+      if (this._activePoints.length > 0 && isRolled !== this._activeRolled) {
+        if (this._activePoints.length >= 2) {
+          this._activeChains.push(this._activePoints);
+        }
+        this._activePoints = [];
+      }
+      this._activeRolled = isRolled;
+      this._advanceActivePoints(swathGround, this._activePoints);
+      this._rebuildActiveChains();
     }
-    if (rollGround) {
-      this._advanceActivePoints(rollGround, this._activeRollPoints);
-    }
-
-    this._rebuildActiveChains();
 
     this._lastSec = currentSec;
   }
 
-  appendImagingSample(nadirGround, rollGround = null) {
-    if (nadirGround) {
-      this._advanceActivePoints(nadirGround, this._activePoints);
-    }
-    if (rollGround) {
-      this._advanceActivePoints(rollGround, this._activeRollPoints);
-    }
-    this._rebuildActiveChains();
-  }
-
   _rebuildActiveChains() {
-    const chains = [];
+    const chains = this._activeChains.map((c) =>
+      c.map((p) => Cartesian3.clone(p)),
+    );
     if (this._activePoints.length >= 2) {
       chains.push(this._activePoints.map((p) => Cartesian3.clone(p)));
-    }
-    if (this._activeRollPoints.length >= 2) {
-      chains.push(this._activeRollPoints.map((p) => Cartesian3.clone(p)));
     }
     if (chains.length > 0) {
       this._rebuildActivePrimitive(chains);
@@ -230,8 +225,9 @@ export class SwathManager {
 
     this._destroyPrimitive(this.activePrimitive);
     this.activePrimitive = null;
+    this._activeChains = [];
     this._activePoints = [];
-    this._activeRollPoints = [];
+    this._activeRolled = false;
 
     if (chains.length === 0) {
       this._passStartSec = null;
@@ -328,8 +324,9 @@ export class SwathManager {
   resetSampling() {
     this._destroyPrimitive(this.activePrimitive);
     this.activePrimitive = null;
+    this._activeChains = [];
     this._activePoints = [];
-    this._activeRollPoints = [];
+    this._activeRolled = false;
     this.passStartTime = null;
     this._passStartSec = null;
     this._lastSec = null;
@@ -343,8 +340,9 @@ export class SwathManager {
       this._destroyPrimitive(pass.primitive);
     }
     this.completedPasses = [];
+    this._activeChains = [];
     this._activePoints = [];
-    this._activeRollPoints = [];
+    this._activeRolled = false;
     this.passStartTime = null;
     this._passStartSec = null;
     this._lastSec = null;
