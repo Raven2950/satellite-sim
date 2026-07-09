@@ -138,26 +138,17 @@ export const JUMP_REFERENCE_SAMPLES = 80;
 /** 离线跳转默认采样（短跳转用） */
 export const JUMP_SAMPLES_PER_ORBIT = 80;
 
-/** 单个 GroundPrimitive 最大四边形数（小批降低 flush 峰值） */
-export const SWATH_INSTANCES_PER_PRIMITIVE = 900;
-
-/** 双星交错跳转：每 N 圈强制 flush pending 上屏 */
-export const JUMP_FLUSH_EVERY_ORBITS = 4;
+/** 单个 GroundPrimitive 最大四边形数 */
+export const SWATH_INSTANCES_PER_PRIMITIVE = 4000;
 
 /**
- * 按跳转天数与卫星数缩放采样，使总条带四边形数 ≈ 15 天双星基准
- * 30 天双星 → 约 40 点/圈，避免 Safari 在 ~75% 处 OOM
+ * 按「总卫星·天」预算采样（与单星 N 天同公式）
+ * 例：双星 30 天 ≡ 单星 60 天 → 同为 40 点/圈
  */
-export function computeJumpSamplesPerOrbit(
-  targetDays,
-  satelliteCount,
-  orbitPeriodSec,
-) {
+export function computeJumpSamplesPerOrbit(totalSatDays, orbitPeriodSec) {
   const refOrbits = Math.floor((JUMP_REFERENCE_DAYS * 86400) / orbitPeriodSec);
-  const targetOrbits = Math.floor((targetDays * 86400) / orbitPeriodSec);
-  const scaled = Math.floor(
-    (refOrbits * JUMP_REFERENCE_SATELLITES * JUMP_REFERENCE_SAMPLES) /
-      Math.max(1, targetOrbits * Math.max(1, satelliteCount)),
-  );
+  const targetOrbits = Math.floor((totalSatDays * 86400) / orbitPeriodSec);
+  const refInstances = refOrbits * JUMP_REFERENCE_SATELLITES * JUMP_REFERENCE_SAMPLES;
+  const scaled = Math.floor(refInstances / Math.max(1, targetOrbits));
   return Math.max(28, Math.min(JUMP_REFERENCE_SAMPLES, scaled));
 }

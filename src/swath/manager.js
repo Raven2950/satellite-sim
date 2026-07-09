@@ -237,9 +237,7 @@ export class SwathManager {
       const ageSec = JulianDate.secondsDifference(finalTime, batchAcq);
       const ageDays = secondsToDays(ageSec);
       const color = swathColorForAge(ageDays, this.fadeConfig);
-      const primitive = this._buildStripFromChains(batchChains, color, {
-        asynchronous: true,
-      });
+      const primitive = this._buildStripFromChains(batchChains, color);
       if (primitive) {
         this.viewer.scene.groundPrimitives.add(primitive);
         this.completedPasses.push({

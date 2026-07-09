@@ -1,6 +1,6 @@
 import * as Cesium from 'cesium';
 import { Satellite } from './Satellite.js';
-import { JUMP_FLUSH_EVERY_ORBITS, computeJumpSamplesPerOrbit } from '../config/satellite.js';
+import { computeJumpSamplesPerOrbit } from '../config/satellite.js';
 
 const { JulianDate } = Cesium;
 
@@ -102,7 +102,8 @@ export class SatelliteRegistry {
 
   /**
    * 离线快进到仿真第 targetDays 天
-   * 双星按圈交错推进 + 周期性 flush，避免顺序跑满一颗再跑第二颗导致内存峰值
+   * 多星与单星走同一条 simulateToSec 链路（采样完再 flush），
+   * 双星 30 天 ≡ 单星 60 天的总痕迹量。
    */
   async simulateToSimDays(targetDays, simClock, { onProgress } = {}) {
     const days = Math.max(0, targetDays);
@@ -121,46 +122,20 @@ export class SatelliteRegistry {
     }
 
     const satellites = [...this.satellites.values()];
+    const totalSatDays = days * satellites.length;
     const jumpSamples = computeJumpSamplesPerOrbit(
-      days,
-      satellites.length,
+      totalSatDays,
       satellites[0].orbitPeriodSec,
     );
 
-    const orbitCount = satellites[0].beginJumpSimulation(
-      anchor,
-      totalSec,
-      jumpSamples,
-    );
-    for (let s = 1; s < satellites.length; s++) {
-      satellites[s].beginJumpSimulation(anchor, totalSec, jumpSamples);
-    }
-
-    if (orbitCount <= 0) {
-      for (const sat of satellites) {
-        sat.swathManager.endJumpSim();
-      }
-    } else {
-      for (let i = 0; i < orbitCount; i++) {
-        for (const sat of satellites) {
-          sat.simulateJumpOrbit(i);
-        }
-
-        if (i > 0 && i % JUMP_FLUSH_EVERY_ORBITS === 0) {
-          for (const sat of satellites) {
-            await sat.swathManager.flushPendingPartial();
-          }
-          onProgress?.((i / orbitCount) * 0.95);
-          await new Promise((resolve) => setTimeout(resolve, 0));
-        } else if (i % 12 === 0) {
-          onProgress?.((i / orbitCount) * 0.95);
-          await new Promise((resolve) => setTimeout(resolve, 0));
-        }
-      }
-
-      for (const sat of satellites) {
-        await sat.finalizeJumpSimulation(totalSec);
-      }
+    for (let i = 0; i < satellites.length; i++) {
+      const sat = satellites[i];
+      await sat.simulateToSec(anchor, totalSec, {
+        samplesPerOrbit: jumpSamples,
+        onProgress: (fraction) => {
+          onProgress?.(((i + fraction) / satellites.length) * 0.95);
+        },
+      });
     }
 
     const finalT = JulianDate.addSeconds(anchor, totalSec, scratch);

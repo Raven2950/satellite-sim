@@ -256,10 +256,14 @@ export class Satellite {
   /**
    * 离线快进到 anchor 起第 targetSimSec 秒（单星；双星由 registry 交错调度）
    */
-  async simulateToSec(anchor, targetSimSec, { onProgress } = {}) {
+  async simulateToSec(anchor, targetSimSec, { onProgress, samplesPerOrbit = 80 } = {}) {
     if (targetSimSec <= 0) return;
 
-    const orbitCount = this.beginJumpSimulation(anchor, targetSimSec);
+    const orbitCount = this.beginJumpSimulation(
+      anchor,
+      targetSimSec,
+      samplesPerOrbit,
+    );
     if (orbitCount <= 0) {
       this.swathManager.endJumpSim();
       return;
