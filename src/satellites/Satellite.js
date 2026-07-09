@@ -9,7 +9,6 @@ import { CoveragePlanner } from '../sensor/coveragePlanner.js';
 import { SwathManager } from '../swath/manager.js';
 import { resolveSatelliteModelUri } from './modelLoader.js';
 import { SensorCone, computeNadirOrientation } from './sensorCone.js';
-import { JUMP_FLUSH_EVERY_ORBITS } from '../config/satellite.js';
 
 const { JulianDate } = Cesium;
 
@@ -233,17 +232,15 @@ export class Satellite {
         this.coveragePlanner,
       );
 
-      if (i > 0 && i % JUMP_FLUSH_EVERY_ORBITS === 0) {
-        await this.swathManager.flushJumpBucketsPartial();
-        onProgress?.(i / orbitCount);
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      } else if (i % 20 === 0) {
-        onProgress?.(i / orbitCount);
+      if (i % 15 === 0) {
+        onProgress?.((i / orbitCount) * 0.9);
         await new Promise((resolve) => setTimeout(resolve, 0));
       }
     }
 
-    await this.swathManager.flushJumpBucketsFinal();
+    await this.swathManager.flushPendingPasses(finalTime, {
+      onProgress: (fraction) => onProgress?.(0.9 + fraction * 0.1),
+    });
     this.swathManager.endJumpSim();
 
     const beginSec = initialSec + orbitCount * orbitPeriodSec;

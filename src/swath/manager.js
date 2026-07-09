@@ -33,7 +33,7 @@ const FADE_CHECK_INTERVAL_MS = 1500;
  * 每圈 ground track 条带
  * - 当前圈：每帧 GroundPrimitive 重建（实时跟随星下点）
  * - 已完成圈：按天褪色 + 节流（避免历史轨迹闪烁）
- * - 离线跳转：按褪色分桶批量合并 primitive，增量 flush 降低内存峰值
+ * - 离线跳转：先暂存链点，结束后再分批上屏（双星跳转不在过程中创建几何）
  */
 export class SwathManager {
   constructor(viewer, orbitConfig, sensorConfig, fadeConfig, orbitEpoch) {
@@ -58,7 +58,7 @@ export class SwathManager {
     this._activeColor = swathColorForAge(0, fadeConfig);
 
     this._jumpFinalTime = null;
-    this._jumpBuckets = null;
+    this._pendingPasses = [];
   }
 
   beginPass(currentTime, sec) {
@@ -72,15 +72,15 @@ export class SwathManager {
     this._coveragePlanner?.beginPass();
   }
 
-  /** 离线跳转开始前设置目标时刻（用于计算褪色分桶） */
+  /** 离线跳转开始前设置目标时刻（用于计算褪色） */
   beginJumpSim(finalTime) {
     this._jumpFinalTime = JulianDate.clone(finalTime, new JulianDate());
-    this._jumpBuckets = new Map();
+    this._pendingPasses = [];
   }
 
   endJumpSim() {
     this._jumpFinalTime = null;
-    this._jumpBuckets = null;
+    this._pendingPasses = [];
   }
 
   preparePassFrame(currentTime, currentSec, orbitPeriodSec) {
@@ -169,9 +169,9 @@ export class SwathManager {
     this.activePrimitive = next;
   }
 
-  /** 离线快进：按褪色分桶累积，满批即 flush */
+  /** 离线快进：只采样链点暂存，不创建 GroundPrimitive */
   simulateOrbitPass(passStartSec, orbitPeriodSec, passStartTime, coveragePlanner) {
-    if (!this._jumpFinalTime || !this._jumpBuckets) {
+    if (!this._jumpFinalTime) {
       console.warn('simulateOrbitPass called outside jump sim');
       return;
     }
@@ -208,85 +208,81 @@ export class SwathManager {
 
     if (chains.length === 0) return;
 
-    const bucket = fadeColorBucket(ageDays, this.fadeConfig);
-    let acc = this._jumpBuckets.get(bucket);
-    if (!acc) {
-      acc = {
-        chains: [],
-        instances: 0,
-        colorBucket: bucket,
-        acquisitionTime: JulianDate.clone(passStartTime, new JulianDate()),
-      };
-      this._jumpBuckets.set(bucket, acc);
-    }
-
-    for (const chain of chains) {
-      acc.chains.push(chain);
-      acc.instances += estimateStripInstances([chain]);
-    }
-
-    if (acc.instances >= SWATH_INSTANCES_PER_PRIMITIVE) {
-      this._flushJumpBucket(bucket);
-    }
+    this._pendingPasses.push({
+      chains,
+      acquisitionTime: JulianDate.clone(passStartTime, new JulianDate()),
+    });
   }
 
-  /** 跳转过程中周期性 flush，释放累积内存 */
-  async flushJumpBucketsPartial() {
-    if (!this._jumpBuckets?.size) return;
+  /** 跳转采样结束后：按褪色分桶合并并分批上屏 */
+  async flushPendingPasses(finalTime, { onProgress } = {}) {
+    const pending = this._pendingPasses;
+    this._pendingPasses = [];
+    if (pending.length === 0) return;
 
-    for (const bucket of [...this._jumpBuckets.keys()]) {
-      const acc = this._jumpBuckets.get(bucket);
-      if (acc?.instances > 0) {
-        this._flushJumpBucket(bucket);
+    let batchChains = [];
+    let batchInstances = 0;
+    let batchAcq = null;
+    let batchBucket = null;
+
+    const flushBatch = () => {
+      if (batchChains.length === 0) return;
+      const ageSec = JulianDate.secondsDifference(finalTime, batchAcq);
+      const ageDays = secondsToDays(ageSec);
+      const color = swathColorForAge(ageDays, this.fadeConfig);
+      const primitive = this._buildStripFromChains(batchChains, color);
+      if (primitive) {
+        this.viewer.scene.groundPrimitives.add(primitive);
+        this.completedPasses.push({
+          primitive,
+          cachedChains: null,
+          acquisitionTime: JulianDate.clone(batchAcq, new JulianDate()),
+          colorBucket: batchBucket,
+        });
+      }
+      batchChains = [];
+      batchInstances = 0;
+      batchAcq = null;
+      batchBucket = null;
+    };
+
+    for (let i = 0; i < pending.length; i++) {
+      const pass = pending[i];
+      const ageSec = JulianDate.secondsDifference(finalTime, pass.acquisitionTime);
+      const ageDays = secondsToDays(ageSec);
+
+      if (shouldHideSwath(ageDays, this.fadeConfig)) {
+        pass.chains = null;
+        continue;
+      }
+
+      const bucket = fadeColorBucket(ageDays, this.fadeConfig);
+      const added = estimateStripInstances(pass.chains);
+
+      if (
+        batchInstances > 0 &&
+        (batchBucket !== bucket ||
+          batchInstances + added > SWATH_INSTANCES_PER_PRIMITIVE)
+      ) {
+        flushBatch();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+
+      if (batchAcq === null) batchAcq = pass.acquisitionTime;
+      batchBucket = bucket;
+      batchChains.push(...pass.chains);
+      batchInstances += added;
+      pass.chains = null;
+
+      if (i > 0 && i % 25 === 0) {
+        onProgress?.((i + 1) / pending.length);
+        await new Promise((resolve) => setTimeout(resolve, 0));
       }
     }
 
+    flushBatch();
+    onProgress?.(1);
     await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-
-  /** 跳转结束：flush 所有剩余分桶 */
-  async flushJumpBucketsFinal() {
-    if (!this._jumpBuckets?.size) return;
-
-    for (const bucket of [...this._jumpBuckets.keys()]) {
-      const acc = this._jumpBuckets.get(bucket);
-      if (acc?.instances > 0) {
-        this._flushJumpBucket(bucket);
-      }
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-
-  _flushJumpBucket(bucket) {
-    const acc = this._jumpBuckets.get(bucket);
-    if (!acc || acc.instances <= 0 || acc.chains.length === 0) {
-      this._jumpBuckets.delete(bucket);
-      return;
-    }
-
-    const ageSec = JulianDate.secondsDifference(
-      this._jumpFinalTime,
-      acc.acquisitionTime,
-    );
-    const ageDays = secondsToDays(ageSec);
-    const color = swathColorForAge(ageDays, this.fadeConfig);
-
-    const primitive = this._buildStripFromChains(acc.chains, color);
-    if (primitive) {
-      this.viewer.scene.groundPrimitives.add(primitive);
-      this.completedPasses.push({
-        primitive,
-        cachedChains: acc.chains,
-        acquisitionTime: JulianDate.clone(
-          acc.acquisitionTime,
-          new JulianDate(),
-        ),
-        colorBucket: bucket,
-      });
-    }
-
-    this._jumpBuckets.delete(bucket);
   }
 
   finalizePass(orbitPeriodSec, coveragePlanner) {
@@ -393,7 +389,7 @@ export class SwathManager {
         continue;
       }
 
-      if (!allowRebuild) continue;
+      if (!allowRebuild || !pass.cachedChains?.length) continue;
 
       const bucket = fadeColorBucket(ageDays, this.fadeConfig);
       if (bucket === pass.colorBucket) continue;
