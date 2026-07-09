@@ -210,57 +210,80 @@ export class Satellite {
     );
   }
 
+  /** 离线跳转：初始化目标时刻与 anchor */
+  beginJumpSimulation(anchor, targetSimSec) {
+    const scratch = new JulianDate();
+    const finalTime = JulianDate.addSeconds(anchor, targetSimSec, scratch);
+    this.swathManager.beginJumpSim(finalTime);
+    this._jumpAnchor = JulianDate.clone(anchor, new JulianDate());
+    this._jumpInitialSec = this._secondsSinceEpoch(anchor);
+    return Math.floor(targetSimSec / this.orbitPeriodSec);
+  }
+
+  /** 离线跳转：模拟单圈 */
+  simulateJumpOrbit(orbitIndex) {
+    const passStartSec = this._jumpInitialSec + orbitIndex * this.orbitPeriodSec;
+    const simElapsed = orbitIndex * this.orbitPeriodSec;
+    const scratch = new JulianDate();
+    const passStartTime = JulianDate.addSeconds(
+      this._jumpAnchor,
+      simElapsed,
+      scratch,
+    );
+
+    this.swathManager.simulateOrbitPass(
+      passStartSec,
+      this.orbitPeriodSec,
+      passStartTime,
+      this.coveragePlanner,
+    );
+  }
+
+  /** 离线跳转：flush 剩余分桶并恢复当前圈状态 */
+  async finalizeJumpSimulation(targetSimSec) {
+    const orbitCount = Math.floor(targetSimSec / this.orbitPeriodSec);
+    await this.swathManager.flushJumpBucketsFinal();
+    this.swathManager.endJumpSim();
+
+    const scratch = new JulianDate();
+    const beginSec = this._jumpInitialSec + orbitCount * this.orbitPeriodSec;
+    const beginTime = JulianDate.addSeconds(
+      this._jumpAnchor,
+      orbitCount * this.orbitPeriodSec,
+      scratch,
+    );
+    this.swathManager.beginPass(beginTime, beginSec);
+    this._lastFrameSec = this._jumpInitialSec + targetSimSec;
+    this.swathCount = this.swathManager.count;
+    this._jumpAnchor = null;
+  }
+
   /**
-   * 离线快进到 anchor 起第 targetSimSec 秒（按整圈推进，不触发实时渲染）
+   * 离线快进到 anchor 起第 targetSimSec 秒（单星顺序推进，双星请用 registry 交错模式）
    */
   async simulateToSec(anchor, targetSimSec, { onProgress } = {}) {
     if (targetSimSec <= 0) return;
 
-    const initialSec = this._secondsSinceEpoch(anchor);
-    const orbitPeriodSec = this.orbitPeriodSec;
-    const orbitCount = Math.floor(targetSimSec / orbitPeriodSec);
-    if (orbitCount <= 0) return;
-
-    const scratch = new JulianDate();
-    const finalTime = JulianDate.addSeconds(anchor, targetSimSec, scratch);
-
-    this.swathManager.beginJumpSim(finalTime);
+    const orbitCount = this.beginJumpSimulation(anchor, targetSimSec);
+    if (orbitCount <= 0) {
+      this.swathManager.endJumpSim();
+      return;
+    }
 
     for (let i = 0; i < orbitCount; i++) {
-      const passStartSec = initialSec + i * orbitPeriodSec;
-      const simElapsed = i * orbitPeriodSec;
-      const passStartTime = JulianDate.addSeconds(anchor, simElapsed, scratch);
-
-      this.swathManager.simulateOrbitPass(
-        passStartSec,
-        orbitPeriodSec,
-        passStartTime,
-        this.coveragePlanner,
-      );
+      this.simulateJumpOrbit(i);
 
       if (i > 0 && i % JUMP_FLUSH_EVERY_ORBITS === 0) {
         await this.swathManager.flushJumpBucketsPartial();
         onProgress?.(i / orbitCount);
         await new Promise((resolve) => setTimeout(resolve, 0));
-      } else if (i % 20 === 0) {
+      } else if (i % 15 === 0) {
         onProgress?.(i / orbitCount);
         await new Promise((resolve) => setTimeout(resolve, 0));
       }
     }
 
-    await this.swathManager.flushJumpBucketsFinal();
-    this.swathManager.releaseCompletedPassChainCache();
-    this.swathManager.endJumpSim();
-
-    const beginSec = initialSec + orbitCount * orbitPeriodSec;
-    const beginTime = JulianDate.addSeconds(
-      anchor,
-      orbitCount * orbitPeriodSec,
-      scratch,
-    );
-    this.swathManager.beginPass(beginTime, beginSec);
-    this._lastFrameSec = initialSec + targetSimSec;
-    this.swathCount = this.swathManager.count;
+    await this.finalizeJumpSimulation(targetSimSec);
   }
 
   get coverageCellCount() {

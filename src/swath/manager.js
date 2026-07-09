@@ -15,6 +15,7 @@ import {
 import {
   SWATH_SAMPLE_INTERVAL_M,
   JUMP_SAMPLES_PER_ORBIT,
+  COVERAGE_JUMP_SAMPLES_PER_ORBIT,
   SWATH_INSTANCES_PER_PRIMITIVE,
 } from '../config/satellite.js';
 
@@ -206,6 +207,10 @@ export class SwathManager {
     );
     const ageDays = secondsToDays(ageSec);
 
+    const coverageOpts = {
+      samplesPerOrbit: COVERAGE_JUMP_SAMPLES_PER_ORBIT,
+    };
+
     if (shouldHideSwath(ageDays, this.fadeConfig)) {
       sampleOrbitCoveragePass(
         passStartSec,
@@ -215,6 +220,7 @@ export class SwathManager {
         coveragePlanner,
         this.ellipsoid,
         this.orbitEpoch,
+        coverageOpts,
       );
       return;
     }
@@ -227,7 +233,18 @@ export class SwathManager {
       coveragePlanner,
       this.ellipsoid,
       this.orbitEpoch,
-      { markGrid: true, samplesPerOrbit: JUMP_SAMPLES_PER_ORBIT },
+      { markGrid: false, samplesPerOrbit: JUMP_SAMPLES_PER_ORBIT },
+    );
+
+    sampleOrbitCoveragePass(
+      passStartSec,
+      orbitPeriodSec,
+      this.orbitConfig,
+      this.sensorConfig,
+      coveragePlanner,
+      this.ellipsoid,
+      this.orbitEpoch,
+      coverageOpts,
     );
 
     if (chains.length === 0) return;
@@ -296,12 +313,16 @@ export class SwathManager {
     const ageDays = secondsToDays(ageSec);
     const color = swathColorForAge(ageDays, this.fadeConfig);
 
-    const primitive = this._buildStripFromChains(acc.chains, color);
+    const chains = acc.chains;
+    const primitive = this._buildStripFromChains(chains, color, {
+      asynchronous: true,
+    });
+    acc.chains = null;
     if (primitive) {
       this.viewer.scene.groundPrimitives.add(primitive);
       this.completedPasses.push({
         primitive,
-        cachedChains: acc.chains,
+        cachedChains: null,
         acquisitionTime: JulianDate.clone(
           acc.acquisitionTime,
           new JulianDate(),
@@ -361,7 +382,7 @@ export class SwathManager {
     this.passStartTime = null;
   }
 
-  _buildStripFromChains(chains, color) {
+  _buildStripFromChains(chains, color, { asynchronous = false } = {}) {
     const instances = chainsToStripInstances(
       chains,
       this.halfWidthM,
@@ -379,18 +400,11 @@ export class SwathManager {
           flat: true,
         }),
         classificationType: ClassificationType.TERRAIN,
-        asynchronous: false,
+        asynchronous,
       });
     } catch (err) {
       console.warn('swath strip failed:', err);
       return null;
-    }
-  }
-
-  /** 跳转结束后释放链点缓存，降低双星场景内存占用（primitive 已上屏，无需再重建） */
-  releaseCompletedPassChainCache() {
-    for (const pass of this.completedPasses) {
-      pass.cachedChains = null;
     }
   }
 
