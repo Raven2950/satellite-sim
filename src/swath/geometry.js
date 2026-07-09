@@ -219,6 +219,49 @@ export function sampleOrbitSwathChains(
   return _splitAtDiscontinuities(chain);
 }
 
+/** 仅更新覆盖栅格（跳转时对将隐藏的圈用稀疏采样） */
+export function sampleOrbitCoveragePass(
+  passStartSec,
+  orbitPeriodSec,
+  orbitConfig,
+  sensorConfig,
+  coveragePlanner,
+  ellipsoid,
+  orbitEpoch,
+  { samplesPerOrbit = 72 } = {},
+) {
+  const nadirSensor = { ...sensorConfig, rollDeg: 0 };
+  const stepSec = orbitPeriodSec / samplesPerOrbit;
+  const endSec = passStartSec + orbitPeriodSec;
+
+  coveragePlanner.beginPass();
+
+  for (let t = passStartSec; t <= endSec + stepSec * 0.01; t += stepSec) {
+    const sec = Math.min(t, endSec);
+    const jd = JulianDate.addSeconds(orbitEpoch, sec, _scratchJulian);
+    const vel = computeEcefVelocity(jd, sec, orbitConfig);
+    const nadir = computeGroundCartesian(
+      jd,
+      sec,
+      orbitConfig,
+      nadirSensor,
+      ellipsoid,
+    );
+    coveragePlanner.planImaging(jd, sec, nadir, vel, ellipsoid, {
+      markGrid: true,
+    });
+    if (sec >= endSec) break;
+  }
+}
+
+export function estimateStripInstances(chains) {
+  let n = 0;
+  for (const chain of chains) {
+    if (chain.length >= 2) n += chain.length - 1;
+  }
+  return n;
+}
+
 /** 将多段 ground chain 合并为条带 primitive 所需点列 */
 export function chainsToStripInstances(chains, halfWidthM, ellipsoid, color) {
   const {

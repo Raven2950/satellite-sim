@@ -1,12 +1,22 @@
 import * as Cesium from 'cesium';
 import {
-  sampleGroundTrackPath,
   sampleOrbitSwathChains,
+  sampleOrbitCoveragePass,
+  estimateStripInstances,
   stitchAdjacentChains,
   chainsToStripInstances,
 } from './geometry.js';
-import { swathColorForAge, fadeColorBucket, secondsToDays, shouldHideSwath } from './fade.js';
-import { SWATH_SAMPLE_INTERVAL_M } from '../config/satellite.js';
+import {
+  swathColorForAge,
+  fadeColorBucket,
+  secondsToDays,
+  shouldHideSwath,
+} from './fade.js';
+import {
+  SWATH_SAMPLE_INTERVAL_M,
+  JUMP_SAMPLES_PER_ORBIT,
+  SWATH_INSTANCES_PER_PRIMITIVE,
+} from '../config/satellite.js';
 
 const {
   JulianDate,
@@ -23,6 +33,7 @@ const FADE_CHECK_INTERVAL_MS = 1500;
  * 每圈 ground track 条带
  * - 当前圈：每帧 GroundPrimitive 重建（实时跟随星下点）
  * - 已完成圈：按天褪色 + 节流（避免历史轨迹闪烁）
+ * - 离线跳转：按褪色分桶批量合并 primitive，增量 flush 降低内存峰值
  */
 export class SwathManager {
   constructor(viewer, orbitConfig, sensorConfig, fadeConfig, orbitEpoch) {
@@ -35,7 +46,6 @@ export class SwathManager {
     this.halfWidthM = (sensorConfig.swathWidthKm * 1000) / 2;
 
     this.completedPasses = [];
-    this._pendingPasses = [];
     this.activePrimitive = null;
     this._activeChains = [];
     this._activePoints = [];
@@ -46,6 +56,9 @@ export class SwathManager {
     this._coveragePlanner = null;
     this._activeRolled = false;
     this._activeColor = swathColorForAge(0, fadeConfig);
+
+    this._jumpFinalTime = null;
+    this._jumpBuckets = null;
   }
 
   beginPass(currentTime, sec) {
@@ -59,7 +72,17 @@ export class SwathManager {
     this._coveragePlanner?.beginPass();
   }
 
-  /** 在 planImaging 之前调用，确保圈界与偏转状态已重置 */
+  /** 离线跳转开始前设置目标时刻（用于计算褪色分桶） */
+  beginJumpSim(finalTime) {
+    this._jumpFinalTime = JulianDate.clone(finalTime, new JulianDate());
+    this._jumpBuckets = new Map();
+  }
+
+  endJumpSim() {
+    this._jumpFinalTime = null;
+    this._jumpBuckets = null;
+  }
+
   preparePassFrame(currentTime, currentSec, orbitPeriodSec) {
     if (this._passStartSec === null) {
       this.beginPass(currentTime, currentSec);
@@ -78,20 +101,13 @@ export class SwathManager {
     }
   }
 
-  /** 白痕始终沿星下点绘制；偏转仅用于覆盖栅格计算，不影响视觉 */
   appendSwathSample(swathGround) {
     if (!swathGround) return;
     this._advanceActivePoints(swathGround, this._activePoints);
     this._rebuildActiveChains();
   }
 
-  /** @deprecated */
-  updateActivePass(
-    currentTime,
-    currentSec,
-    orbitPeriodSec,
-    swathGround,
-  ) {
+  updateActivePass(currentTime, currentSec, orbitPeriodSec, swathGround) {
     this.preparePassFrame(currentTime, currentSec, orbitPeriodSec);
     this.appendSwathSample(swathGround);
     this._lastSec = currentSec;
@@ -153,8 +169,32 @@ export class SwathManager {
     this.activePrimitive = next;
   }
 
-  /** 离线快进：采样一整圈轨迹（对地 + 偏转），暂存链式点列 */
+  /** 离线快进：按褪色分桶累积，满批即 flush */
   simulateOrbitPass(passStartSec, orbitPeriodSec, passStartTime, coveragePlanner) {
+    if (!this._jumpFinalTime || !this._jumpBuckets) {
+      console.warn('simulateOrbitPass called outside jump sim');
+      return;
+    }
+
+    const ageSec = JulianDate.secondsDifference(
+      this._jumpFinalTime,
+      passStartTime,
+    );
+    const ageDays = secondsToDays(ageSec);
+
+    if (shouldHideSwath(ageDays, this.fadeConfig)) {
+      sampleOrbitCoveragePass(
+        passStartSec,
+        orbitPeriodSec,
+        this.orbitConfig,
+        this.sensorConfig,
+        coveragePlanner,
+        this.ellipsoid,
+        this.orbitEpoch,
+      );
+      return;
+    }
+
     const chains = sampleOrbitSwathChains(
       passStartSec,
       orbitPeriodSec,
@@ -163,51 +203,90 @@ export class SwathManager {
       coveragePlanner,
       this.ellipsoid,
       this.orbitEpoch,
-      { markGrid: true },
+      { markGrid: true, samplesPerOrbit: JUMP_SAMPLES_PER_ORBIT },
     );
 
     if (chains.length === 0) return;
 
-    this._pendingPasses.push({
-      cachedChains: chains.map((c) => c.map((p) => Cartesian3.clone(p))),
-      acquisitionTime: JulianDate.clone(passStartTime, new JulianDate()),
-    });
+    const bucket = fadeColorBucket(ageDays, this.fadeConfig);
+    let acc = this._jumpBuckets.get(bucket);
+    if (!acc) {
+      acc = {
+        chains: [],
+        instances: 0,
+        colorBucket: bucket,
+        acquisitionTime: JulianDate.clone(passStartTime, new JulianDate()),
+      };
+      this._jumpBuckets.set(bucket, acc);
+    }
+
+    for (const chain of chains) {
+      acc.chains.push(chain);
+      acc.instances += estimateStripInstances([chain]);
+    }
+
+    if (acc.instances >= SWATH_INSTANCES_PER_PRIMITIVE) {
+      this._flushJumpBucket(bucket);
+    }
   }
 
-  /** 将离线暂存的条带批量提交到场景 */
-  async flushPendingPasses(currentTime, { onProgress } = {}) {
-    const pending = this._pendingPasses;
-    this._pendingPasses = [];
-    if (pending.length === 0) return;
+  /** 跳转过程中周期性 flush，释放累积内存 */
+  async flushJumpBucketsPartial() {
+    if (!this._jumpBuckets?.size) return;
 
-    const batchSize = 40;
-    for (let i = 0; i < pending.length; i++) {
-      const pass = pending[i];
-      const ageSec = JulianDate.secondsDifference(
-        currentTime,
-        pass.acquisitionTime,
-      );
-      const ageDays = secondsToDays(ageSec);
-      const color = swathColorForAge(ageDays, this.fadeConfig);
-      if (shouldHideSwath(ageDays, this.fadeConfig)) continue;
-
-      const primitive = this._buildStripFromChains(pass.cachedChains, color);
-      if (primitive) {
-        this.viewer.scene.groundPrimitives.add(primitive);
-        this.completedPasses.push({
-          primitive,
-          cachedChains: pass.cachedChains,
-          acquisitionTime: pass.acquisitionTime,
-          colorBucket: fadeColorBucket(ageDays, this.fadeConfig),
-        });
-      }
-
-      if (i % batchSize === batchSize - 1) {
-        onProgress?.((i + 1) / pending.length);
-        await new Promise((resolve) => setTimeout(resolve, 0));
+    for (const bucket of [...this._jumpBuckets.keys()]) {
+      const acc = this._jumpBuckets.get(bucket);
+      if (acc?.instances > 0) {
+        this._flushJumpBucket(bucket);
       }
     }
-    onProgress?.(1);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  /** 跳转结束：flush 所有剩余分桶 */
+  async flushJumpBucketsFinal() {
+    if (!this._jumpBuckets?.size) return;
+
+    for (const bucket of [...this._jumpBuckets.keys()]) {
+      const acc = this._jumpBuckets.get(bucket);
+      if (acc?.instances > 0) {
+        this._flushJumpBucket(bucket);
+      }
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  _flushJumpBucket(bucket) {
+    const acc = this._jumpBuckets.get(bucket);
+    if (!acc || acc.instances <= 0 || acc.chains.length === 0) {
+      this._jumpBuckets.delete(bucket);
+      return;
+    }
+
+    const ageSec = JulianDate.secondsDifference(
+      this._jumpFinalTime,
+      acc.acquisitionTime,
+    );
+    const ageDays = secondsToDays(ageSec);
+    const color = swathColorForAge(ageDays, this.fadeConfig);
+
+    const primitive = this._buildStripFromChains(acc.chains, color);
+    if (primitive) {
+      this.viewer.scene.groundPrimitives.add(primitive);
+      this.completedPasses.push({
+        primitive,
+        cachedChains: acc.chains,
+        acquisitionTime: JulianDate.clone(
+          acc.acquisitionTime,
+          new JulianDate(),
+        ),
+        colorBucket: bucket,
+      });
+    }
+
+    this._jumpBuckets.delete(bucket);
   }
 
   finalizePass(orbitPeriodSec, coveragePlanner) {
@@ -248,7 +327,7 @@ export class SwathManager {
       this.viewer.scene.groundPrimitives.add(primitive);
       this.completedPasses.push({
         primitive,
-        cachedChains: chains.map((c) => c.map((p) => Cartesian3.clone(p))),
+        cachedChains: chains,
         acquisitionTime: JulianDate.clone(this.passStartTime, new JulianDate()),
         colorBucket: fadeColorBucket(0, this.fadeConfig),
       });
@@ -309,6 +388,7 @@ export class SwathManager {
 
       if (shouldHideSwath(ageDays, this.fadeConfig)) {
         this._destroyPrimitive(pass.primitive);
+        pass.cachedChains = null;
         this.completedPasses.splice(i, 1);
         continue;
       }
@@ -340,11 +420,12 @@ export class SwathManager {
   }
 
   clear() {
-    this._pendingPasses = [];
+    this.endJumpSim();
     this._destroyPrimitive(this.activePrimitive);
     this.activePrimitive = null;
     for (const pass of this.completedPasses) {
       this._destroyPrimitive(pass.primitive);
+      pass.cachedChains = null;
     }
     this.completedPasses = [];
     this._activeChains = [];
