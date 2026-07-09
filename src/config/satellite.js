@@ -75,6 +75,8 @@ export function buildSatelliteConfigs({
     maxRollDeg: 30,
     rollDeg: 0,
     coverageCellDeg: 0.05,
+    /** 覆盖栅格沿轨标记步长（米），与渲染采样解耦 */
+    coverageMarkStepM: 3000,
   };
   const fade = {
     cycleDays: 30,

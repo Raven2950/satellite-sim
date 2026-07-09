@@ -1,11 +1,14 @@
 import * as Cesium from 'cesium';
 import { computeGroundCartesian } from '../orbit/propagate.js';
 
-const { Cartesian3, Math: CesiumMath } = Cesium;
+const { Cartesian3, EllipsoidGeodesic, Math: CesiumMath } = Cesium;
 
 const M_PER_DEG_LAT = 111320;
 
-/** 全球覆盖栅格（标记已被 60 km 视场扫过的区域） */
+/** 覆盖栅格沿轨标记步长（米）——与渲染采样解耦 */
+export const DEFAULT_COVERAGE_MARK_STEP_M = 3000;
+
+/** 全球覆盖栅格（标记已被视场扫过的区域） */
 export class CoverageGrid {
   constructor(cellDeg = 0.05) {
     this.cellDeg = cellDeg;
@@ -42,22 +45,6 @@ export class CoverageGrid {
     );
   }
 
-  /** 沿星下点轨迹中心线标记（无侧向展宽，用于偏转触发） */
-  markCenterlineSegment(p0, p1, ellipsoid) {
-    const dist = Cartesian3.distance(p0, p1);
-    const stepM = Math.max(this.cellDeg * M_PER_DEG_LAT * 0.45, 500);
-    const n = Math.max(1, Math.ceil(dist / stepM));
-    for (let i = 0; i <= n; i++) {
-      const p = Cartesian3.lerp(p0, p1, i / n, new Cartesian3());
-      const carto = ellipsoid.cartesianToCartographic(p);
-      carto.height = 0;
-      this.markAtCartesian(
-        ellipsoid.cartographicToCartesian(carto),
-        ellipsoid,
-      );
-    }
-  }
-
   /** 传感器视场圆（半幅宽 = swathWidth/2） */
   markFootprint(center, halfWidthM, ellipsoid) {
     const carto = ellipsoid.cartesianToCartographic(center);
@@ -73,17 +60,27 @@ export class CoverageGrid {
     }
   }
 
-  markSegment(p0, p1, halfWidthM, ellipsoid) {
-    const dist = Cartesian3.distance(p0, p1);
-    const step = Math.max(halfWidthM * 0.3, 8000);
-    const n = Math.max(1, Math.ceil(dist / step));
-    for (let i = 0; i <= n; i++) {
-      const p = Cartesian3.lerp(p0, p1, i / n, new Cartesian3());
-      const carto = ellipsoid.cartesianToCartographic(p);
-      carto.height = 0;
+  /** 沿椭球大地线密采样并标记宽幅条带 */
+  markSwathSegmentGeodesic(p0, p1, halfWidthM, ellipsoid, stepM) {
+    const c0 = ellipsoid.cartesianToCartographic(p0);
+    const c1 = ellipsoid.cartesianToCartographic(p1);
+    const geodesic = new EllipsoidGeodesic(c0, c1, ellipsoid);
+    const dist = geodesic.surfaceDistance;
+
+    if (dist < 1) {
+      this.markFootprint(p0, halfWidthM, ellipsoid);
+      return;
+    }
+
+    const step = Math.max(stepM, halfWidthM * 0.12, 500);
+    for (let d = 0; d <= dist; d += step) {
+      const carto = geodesic.interpolateUsingSurfaceDistance(
+        Math.min(d, dist),
+      );
       const onSurf = ellipsoid.cartographicToCartesian(carto);
       this.markFootprint(onSurf, halfWidthM, ellipsoid);
     }
+    this.markFootprint(p1, halfWidthM, ellipsoid);
   }
 
   get coveredCellCount() {
@@ -108,10 +105,9 @@ const _scratchOffset = new Cartesian3();
 const _scratchTarget = new Cartesian3();
 
 /**
- * 默认对地；星下点进入历史轨迹中心线时锁定偏转角至本圈结束（仅影响白痕）
- * - 宽幅栅格：选偏转角时避开已扫区域
- * - 中心线栅格：偏转触发（仅星下点重访，不含侧向条带边缘）
- * - 本圈标记单独累积，避免同圈误判
+ * 默认对地；星下点进入历史宽幅覆盖区时锁定偏转角至本圈结束（仅影响白痕）
+ * - grid：历史条带（偏转触发 + 累积覆盖）
+ * - sessionGrid：本圈条带（选角时参考，不参与触发）
  */
 export class CoveragePlanner {
   constructor(orbitConfig, sensorConfig) {
@@ -120,18 +116,17 @@ export class CoveragePlanner {
     const cellDeg = sensorConfig.coverageCellDeg ?? 0.05;
     this.grid = new CoverageGrid(cellDeg);
     this.sessionGrid = new CoverageGrid(cellDeg);
-    this.trackGrid = new CoverageGrid(cellDeg);
-    this.trackSessionGrid = new CoverageGrid(cellDeg);
     this.halfSwathM = (sensorConfig.swathWidthKm * 1000) / 2;
+    this.markStepM = sensorConfig.coverageMarkStepM ?? DEFAULT_COVERAGE_MARK_STEP_M;
     this.altitudeM = orbitConfig.altitudeKm * 1000;
     this.maxRollDeg = sensorConfig.maxRollDeg ?? 30;
     this.maxCrossM =
       this.altitudeM * Math.tan(CesiumMath.toRadians(this.maxRollDeg));
     this._prevSwath = null;
-    this._prevNadir = null;
     this._passRollDeg = 0;
     this._passRollLocked = false;
     this.currentRollDeg = 0;
+    this._passCount = 0;
   }
 
   get coveredCellCount() {
@@ -141,26 +136,22 @@ export class CoveragePlanner {
   reset() {
     this.grid.clear();
     this.sessionGrid.clear();
-    this.trackGrid.clear();
-    this.trackSessionGrid.clear();
     this._prevSwath = null;
-    this._prevNadir = null;
     this._passRollDeg = 0;
     this._passRollLocked = false;
     this.currentRollDeg = 0;
+    this._passCount = 0;
   }
 
-  /** 每圈开始时：上一圈标记并入历史，并重置段内偏转状态 */
+  /** 每圈开始时：上一圈条带并入历史，并重置段内偏转状态 */
   beginPass() {
     this.grid.mergeFrom(this.sessionGrid);
     this.sessionGrid.clear();
-    this.trackGrid.mergeFrom(this.trackSessionGrid);
-    this.trackSessionGrid.clear();
     this._passRollDeg = 0;
     this._passRollLocked = false;
     this.currentRollDeg = 0;
     this._prevSwath = null;
-    this._prevNadir = null;
+    this._passCount += 1;
   }
 
   _isCoveredAny(latDeg, lonDeg) {
@@ -170,29 +161,14 @@ export class CoveragePlanner {
     );
   }
 
-  _markNadirTrack(nadirGround, ellipsoid) {
-    if (this._prevNadir) {
-      this.trackSessionGrid.markCenterlineSegment(
-        this._prevNadir,
-        nadirGround,
-        ellipsoid,
-      );
-    } else {
-      this.trackSessionGrid.markAtCartesian(nadirGround, ellipsoid);
-    }
-    this._prevNadir = Cartesian3.clone(
-      nadirGround,
-      this._prevNadir ?? new Cartesian3(),
-    );
-  }
-
   _markSession(swathGround, ellipsoid) {
     if (this._prevSwath) {
-      this.sessionGrid.markSegment(
+      this.sessionGrid.markSwathSegmentGeodesic(
         this._prevSwath,
         swathGround,
         this.halfSwathM,
         ellipsoid,
+        this.markStepM,
       );
     } else {
       this.sessionGrid.markFootprint(swathGround, this.halfSwathM, ellipsoid);
@@ -214,7 +190,7 @@ export class CoveragePlanner {
     ellipsoid,
     { markGrid = true } = {},
   ) {
-    const nadirCovered = this.trackGrid.isCoveredAtCartesian(
+    const nadirCovered = this.grid.isCoveredAtCartesian(
       nadirGround,
       ellipsoid,
     );
@@ -224,6 +200,12 @@ export class CoveragePlanner {
       if (rollDeg !== null) {
         this._passRollDeg = rollDeg;
         this._passRollLocked = true;
+        if (import.meta.env.DEV) {
+          const c = ellipsoid.cartesianToCartographic(nadirGround);
+          console.debug(
+            `[roll] pass=${this._passCount} lat=${CesiumMath.toDegrees(c.latitude).toFixed(2)} lon=${CesiumMath.toDegrees(c.longitude).toFixed(2)} roll=${rollDeg.toFixed(1)}°`,
+          );
+        }
       }
     }
 
@@ -241,7 +223,6 @@ export class CoveragePlanner {
     }
 
     if (markGrid) {
-      this._markNadirTrack(nadirGround, ellipsoid);
       this._markSession(swathGround, ellipsoid);
     }
 
