@@ -97,14 +97,18 @@ function _splitAtDiscontinuities(points) {
 }
 
 /** 对地→偏转切换处：沿球面短过渡，避免 A/B 段之间视觉断点 */
-export function bridgeSwathTransition(fromGround, toGround, ellipsoid, steps = 6) {
+export function bridgeSwathTransition(fromGround, toGround, ellipsoid, steps) {
   if (Cartesian3.distance(fromGround, toGround) < 1) {
     return [Cartesian3.clone(fromGround), Cartesian3.clone(toGround)];
   }
 
+  const dist = Cartesian3.distance(fromGround, toGround);
+  const stepCount =
+    steps ?? Math.max(8, Math.min(32, Math.ceil(dist / 25_000)));
+
   const points = [];
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps;
+  for (let i = 0; i <= stepCount; i++) {
+    const t = i / stepCount;
     const raw = Cartesian3.lerp(fromGround, toGround, t, new Cartesian3());
     const carto = ellipsoid.cartesianToCartographic(raw);
     carto.height = 0;
@@ -155,10 +159,15 @@ export function sampleOrbitSwathChains(
 
     if (chain.length > 0 && plan.isRolled !== prevRolled) {
       if (chain.length >= 2) chains.push(chain);
-      if (!prevRolled && plan.isRolled && prevNadir) {
+      const from = chain[chain.length - 1] ?? prevNadir;
+      if (from) {
+        const bridgeStart = prevRolled ? from : prevNadir ?? from;
+        const bridgeEnd = plan.isRolled
+          ? plan.swathGround
+          : plan.nadirGround ?? plan.swathGround;
         const bridge = bridgeSwathTransition(
-          prevNadir,
-          plan.swathGround,
+          bridgeStart,
+          bridgeEnd,
           ellipsoid,
         );
         if (bridge.length >= 2) chains.push(bridge);

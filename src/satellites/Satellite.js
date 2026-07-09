@@ -130,6 +130,11 @@ export class Satellite {
     ) {
       imaging = this._denseImagingAdvance(this._lastFrameSec, sec);
     } else {
+      this.swathManager.preparePassFrame(
+        currentTime,
+        sec,
+        this.orbitPeriodSec,
+      );
       imaging = this.coveragePlanner.planImaging(
         currentTime,
         sec,
@@ -137,14 +142,12 @@ export class Satellite {
         vel,
         this.ellipsoid,
       );
-      this.swathManager.updateActivePass(
-        currentTime,
-        sec,
-        this.orbitPeriodSec,
+      this.swathManager.appendSwathSample(
         imaging.swathGround,
         imaging.isRolled,
         imaging.nadirGround,
       );
+      this.swathManager._lastSec = sec;
     }
 
     const modelCfg = this.config.appearance?.model ?? {};
@@ -180,6 +183,8 @@ export class Satellite {
         { ...this.config.sensor, rollDeg: 0 },
         this.ellipsoid,
       );
+
+      this.swathManager.preparePassFrame(jd, sec, this.orbitPeriodSec);
       lastImaging = this.coveragePlanner.planImaging(
         jd,
         sec,
@@ -187,16 +192,15 @@ export class Satellite {
         vel,
         this.ellipsoid,
       );
-      this.swathManager.updateActivePass(
-        jd,
-        sec,
-        this.orbitPeriodSec,
+      this.swathManager.appendSwathSample(
         lastImaging.swathGround,
         lastImaging.isRolled,
         lastImaging.nadirGround,
       );
       if (sec >= toSec) break;
     }
+
+    this.swathManager._lastSec = toSec;
 
     return (
       lastImaging ?? {

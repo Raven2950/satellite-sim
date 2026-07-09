@@ -59,7 +59,58 @@ export class SwathManager {
     this._coveragePlanner?.beginPass();
   }
 
+  /** 在 planImaging 之前调用，确保圈界与偏转状态已重置 */
+  preparePassFrame(currentTime, currentSec, orbitPeriodSec) {
+    if (this._passStartSec === null) {
+      this.beginPass(currentTime, currentSec);
+      return;
+    }
+
+    if (this._lastSec !== null && currentSec < this._lastSec) {
+      this.resetSampling();
+      this.beginPass(currentTime, currentSec);
+      return;
+    }
+
+    if (currentSec - this._passStartSec >= orbitPeriodSec * 0.995) {
+      this.finalizePass(orbitPeriodSec, this._coveragePlanner);
+      this.beginPass(currentTime, currentSec);
+    }
+  }
+
   /** 当前圈：沿实际成像地面点延伸（对地或锁角偏转） */
+  appendSwathSample(swathGround, isRolled = false, nadirGround = null) {
+    if (!swathGround) return;
+
+    if (this._activePoints.length > 0 && isRolled !== this._activeRolled) {
+      if (this._activePoints.length >= 2) {
+        this._activeChains.push(this._activePoints);
+      }
+      const from =
+        this._activePoints[this._activePoints.length - 1] ?? null;
+      if (from) {
+        const bridgeStart = this._activeRolled ? from : nadirGround ?? from;
+        const bridgeEnd = isRolled ? swathGround : nadirGround ?? swathGround;
+        if (bridgeStart && bridgeEnd) {
+          const bridge = bridgeSwathTransition(
+            bridgeStart,
+            bridgeEnd,
+            this.ellipsoid,
+          );
+          if (bridge.length >= 2) {
+            this._activeChains.push(bridge);
+          }
+        }
+      }
+      this._activePoints = [];
+    }
+
+    this._activeRolled = isRolled;
+    this._advanceActivePoints(swathGround, this._activePoints);
+    this._rebuildActiveChains();
+  }
+
+  /** @deprecated 保留兼容；内部拆分为 preparePassFrame + appendSwathSample */
   updateActivePass(
     currentTime,
     currentSec,
@@ -68,42 +119,8 @@ export class SwathManager {
     isRolled = false,
     nadirGround = null,
   ) {
-    if (this._passStartSec === null) {
-      this.beginPass(currentTime, currentSec);
-    }
-
-    if (this._lastSec !== null && currentSec < this._lastSec) {
-      this.resetSampling();
-      this.beginPass(currentTime, currentSec);
-    }
-
-    if (currentSec - this._passStartSec >= orbitPeriodSec * 0.995) {
-      this.finalizePass(orbitPeriodSec, this._coveragePlanner);
-      this.beginPass(currentTime, currentSec);
-    }
-
-    if (swathGround) {
-      if (this._activePoints.length > 0 && isRolled !== this._activeRolled) {
-        if (this._activePoints.length >= 2) {
-          this._activeChains.push(this._activePoints);
-        }
-        if (!this._activeRolled && isRolled && nadirGround) {
-          const bridge = bridgeSwathTransition(
-            nadirGround,
-            swathGround,
-            this.ellipsoid,
-          );
-          if (bridge.length >= 2) {
-            this._activeChains.push(bridge);
-          }
-        }
-        this._activePoints = [];
-      }
-      this._activeRolled = isRolled;
-      this._advanceActivePoints(swathGround, this._activePoints);
-      this._rebuildActiveChains();
-    }
-
+    this.preparePassFrame(currentTime, currentSec, orbitPeriodSec);
+    this.appendSwathSample(swathGround, isRolled, nadirGround);
     this._lastSec = currentSec;
   }
 

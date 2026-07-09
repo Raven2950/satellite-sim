@@ -34,6 +34,30 @@ export class CoverageGrid {
     this.covered.add(this._key(latDeg, lonDeg));
   }
 
+  markAtCartesian(cartesian, ellipsoid) {
+    const c = ellipsoid.cartesianToCartographic(cartesian);
+    this.mark(
+      CesiumMath.toDegrees(c.latitude),
+      CesiumMath.toDegrees(c.longitude),
+    );
+  }
+
+  /** 沿星下点轨迹中心线标记（无侧向展宽，用于偏转触发） */
+  markCenterlineSegment(p0, p1, ellipsoid) {
+    const dist = Cartesian3.distance(p0, p1);
+    const stepM = Math.max(this.cellDeg * M_PER_DEG_LAT * 0.45, 500);
+    const n = Math.max(1, Math.ceil(dist / stepM));
+    for (let i = 0; i <= n; i++) {
+      const p = Cartesian3.lerp(p0, p1, i / n, new Cartesian3());
+      const carto = ellipsoid.cartesianToCartographic(p);
+      carto.height = 0;
+      this.markAtCartesian(
+        ellipsoid.cartographicToCartesian(carto),
+        ellipsoid,
+      );
+    }
+  }
+
   /** 传感器视场圆（半幅宽 = swathWidth/2） */
   markFootprint(center, halfWidthM, ellipsoid) {
     const carto = ellipsoid.cartesianToCartographic(center);
@@ -84,21 +108,27 @@ const _scratchOffset = new Cartesian3();
 const _scratchTarget = new Cartesian3();
 
 /**
- * 默认对地；星下点进入历史已扫区域时锁定偏转角至本圈结束（仅影响白痕）
- * 本圈内的实时标记单独累积，避免把刚扫过的条带误判为“重访”而提前偏转
+ * 默认对地；星下点进入历史轨迹中心线时锁定偏转角至本圈结束（仅影响白痕）
+ * - 宽幅栅格：选偏转角时避开已扫区域
+ * - 中心线栅格：偏转触发（仅星下点重访，不含侧向条带边缘）
+ * - 本圈标记单独累积，避免同圈误判
  */
 export class CoveragePlanner {
   constructor(orbitConfig, sensorConfig) {
     this.orbitConfig = orbitConfig;
     this.sensorConfig = sensorConfig;
-    this.grid = new CoverageGrid(sensorConfig.coverageCellDeg ?? 0.05);
-    this.sessionGrid = new CoverageGrid(sensorConfig.coverageCellDeg ?? 0.05);
+    const cellDeg = sensorConfig.coverageCellDeg ?? 0.05;
+    this.grid = new CoverageGrid(cellDeg);
+    this.sessionGrid = new CoverageGrid(cellDeg);
+    this.trackGrid = new CoverageGrid(cellDeg);
+    this.trackSessionGrid = new CoverageGrid(cellDeg);
     this.halfSwathM = (sensorConfig.swathWidthKm * 1000) / 2;
     this.altitudeM = orbitConfig.altitudeKm * 1000;
     this.maxRollDeg = sensorConfig.maxRollDeg ?? 30;
     this.maxCrossM =
       this.altitudeM * Math.tan(CesiumMath.toRadians(this.maxRollDeg));
     this._prevSwath = null;
+    this._prevNadir = null;
     this._passRollDeg = 0;
     this._passRollLocked = false;
     this.currentRollDeg = 0;
@@ -111,7 +141,10 @@ export class CoveragePlanner {
   reset() {
     this.grid.clear();
     this.sessionGrid.clear();
+    this.trackGrid.clear();
+    this.trackSessionGrid.clear();
     this._prevSwath = null;
+    this._prevNadir = null;
     this._passRollDeg = 0;
     this._passRollLocked = false;
     this.currentRollDeg = 0;
@@ -121,16 +154,35 @@ export class CoveragePlanner {
   beginPass() {
     this.grid.mergeFrom(this.sessionGrid);
     this.sessionGrid.clear();
+    this.trackGrid.mergeFrom(this.trackSessionGrid);
+    this.trackSessionGrid.clear();
     this._passRollDeg = 0;
     this._passRollLocked = false;
     this.currentRollDeg = 0;
     this._prevSwath = null;
+    this._prevNadir = null;
   }
 
   _isCoveredAny(latDeg, lonDeg) {
     return (
       this.grid.isCovered(latDeg, lonDeg) ||
       this.sessionGrid.isCovered(latDeg, lonDeg)
+    );
+  }
+
+  _markNadirTrack(nadirGround, ellipsoid) {
+    if (this._prevNadir) {
+      this.trackSessionGrid.markCenterlineSegment(
+        this._prevNadir,
+        nadirGround,
+        ellipsoid,
+      );
+    } else {
+      this.trackSessionGrid.markAtCartesian(nadirGround, ellipsoid);
+    }
+    this._prevNadir = Cartesian3.clone(
+      nadirGround,
+      this._prevNadir ?? new Cartesian3(),
     );
   }
 
@@ -162,7 +214,10 @@ export class CoveragePlanner {
     ellipsoid,
     { markGrid = true } = {},
   ) {
-    const nadirCovered = this.grid.isCoveredAtCartesian(nadirGround, ellipsoid);
+    const nadirCovered = this.trackGrid.isCoveredAtCartesian(
+      nadirGround,
+      ellipsoid,
+    );
 
     if (!this._passRollLocked && nadirCovered) {
       const rollDeg = this._pickRollAngle(nadirGround, vel, ellipsoid);
@@ -186,6 +241,7 @@ export class CoveragePlanner {
     }
 
     if (markGrid) {
+      this._markNadirTrack(nadirGround, ellipsoid);
       this._markSession(swathGround, ellipsoid);
     }
 
