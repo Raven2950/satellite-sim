@@ -5,7 +5,6 @@ import {
   estimateStripInstances,
   stitchAdjacentChains,
   chainsToStripInstances,
-  chainsToStripInstancesFromSegments,
 } from './geometry.js';
 import {
   swathColorForAge,
@@ -369,21 +368,6 @@ export class SwathManager {
       this.ellipsoid,
       color,
     );
-    return this._createGroundPrimitive(instances);
-  }
-
-  _buildStripFromSegments(segments, currentTime) {
-    const instances = chainsToStripInstancesFromSegments(
-      segments,
-      this.halfWidthM,
-      this.ellipsoid,
-      this.fadeConfig,
-      currentTime,
-    );
-    return this._createGroundPrimitive(instances);
-  }
-
-  _createGroundPrimitive(instances) {
     if (instances.length === 0) return null;
 
     try {
@@ -404,14 +388,19 @@ export class SwathManager {
   }
 
   /**
-   * 跳转结束后合并所有历史条带为单个 Primitive（按段保留褪色数据）
+   * 跳转结束后按褪色分桶压缩 Primitive 数量（每批不超过实例上限，避免巨型 Primitive）
    */
-  consolidateCompletedPasses(currentTime) {
-    if (this.completedPasses.length <= 1) return;
+  async compactCompletedPasses(currentTime) {
+    if (this.completedPasses.length <= 2) return;
 
-    const segments = [];
+    const byBucket = new Map();
+
     for (const pass of this.completedPasses) {
-      if (!pass.cachedChains?.length) continue;
+      if (!pass.cachedChains?.length) {
+        this._destroyPrimitive(pass.primitive);
+        continue;
+      }
+
       const ageSec = JulianDate.secondsDifference(
         currentTime,
         pass.acquisitionTime,
@@ -422,42 +411,56 @@ export class SwathManager {
         pass.cachedChains = null;
         continue;
       }
-      segments.push({
-        chains: pass.cachedChains,
-        acquisitionTime: JulianDate.clone(
-          pass.acquisitionTime,
-          new JulianDate(),
-        ),
-        colorBucket: fadeColorBucket(ageDays, this.fadeConfig),
-      });
-      this._destroyPrimitive(pass.primitive);
-      pass.cachedChains = null;
+
+      const bucket = fadeColorBucket(ageDays, this.fadeConfig);
+      if (!byBucket.has(bucket)) byBucket.set(bucket, []);
+      byBucket.get(bucket).push(pass);
     }
 
-    if (segments.length === 0) {
-      this.completedPasses = [];
-      return;
+    const compacted = [];
+
+    for (const [bucket, passes] of byBucket) {
+      let batchChains = [];
+      let batchInstances = 0;
+      let batchAcq = passes[0].acquisitionTime;
+
+      const flushBatch = () => {
+        if (batchChains.length === 0) return;
+        const ageSec = JulianDate.secondsDifference(currentTime, batchAcq);
+        const color = swathColorForAge(secondsToDays(ageSec), this.fadeConfig);
+        const primitive = this._buildStripFromChains(batchChains, color);
+        if (primitive) {
+          this.viewer.scene.groundPrimitives.add(primitive);
+          compacted.push({
+            primitive,
+            cachedChains: batchChains,
+            acquisitionTime: JulianDate.clone(batchAcq, new JulianDate()),
+            colorBucket: bucket,
+          });
+        }
+        batchChains = [];
+        batchInstances = 0;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      };
+
+      for (const pass of passes) {
+        this._destroyPrimitive(pass.primitive);
+        const added = estimateStripInstances(pass.cachedChains);
+        if (
+          batchInstances > 0 &&
+          batchInstances + added > SWATH_INSTANCES_PER_PRIMITIVE
+        ) {
+          flushBatch();
+          batchAcq = pass.acquisitionTime;
+        }
+        batchChains.push(...pass.cachedChains);
+        batchInstances += added;
+        pass.cachedChains = null;
+      }
+      flushBatch();
     }
 
-    const primitive = this._buildStripFromSegments(segments, currentTime);
-    if (!primitive) {
-      this.completedPasses = [];
-      return;
-    }
-
-    this.viewer.scene.groundPrimitives.add(primitive);
-    this.completedPasses = [
-      {
-        primitive,
-        consolidated: true,
-        segments,
-        acquisitionTime: JulianDate.clone(
-          segments[0].acquisitionTime,
-          new JulianDate(),
-        ),
-        colorBucket: -1,
-      },
-    ];
+    this.completedPasses = compacted;
   }
 
   _destroyPrimitive(primitive) {
@@ -475,15 +478,6 @@ export class SwathManager {
       : FADE_CHECK_INTERVAL_MS;
     const allowRebuild = wallNow - this._lastFadeWallMs >= fadeInterval;
     if (allowRebuild) this._lastFadeWallMs = wallNow;
-
-    if (this.completedPasses.length === 1 && this.completedPasses[0].consolidated) {
-      this._updateConsolidatedFade(
-        this.completedPasses[0],
-        currentTime,
-        { allowRebuild: allowRebuild && !fastPlayback },
-      );
-      return;
-    }
 
     for (let i = this.completedPasses.length - 1; i >= 0; i--) {
       const pass = this.completedPasses[i];
@@ -514,52 +508,6 @@ export class SwathManager {
       this._destroyPrimitive(pass.primitive);
       pass.primitive = next;
     }
-  }
-
-  _updateConsolidatedFade(pass, currentTime, { allowRebuild }) {
-    let removed = false;
-    let needsRebuild = false;
-
-    for (let i = pass.segments.length - 1; i >= 0; i--) {
-      const seg = pass.segments[i];
-      const ageSec = JulianDate.secondsDifference(
-        currentTime,
-        seg.acquisitionTime,
-      );
-      const ageDays = secondsToDays(ageSec);
-
-      if (shouldHideSwath(ageDays, this.fadeConfig)) {
-        pass.segments.splice(i, 1);
-        removed = true;
-        continue;
-      }
-
-      const bucket = fadeColorBucket(ageDays, this.fadeConfig);
-      if (bucket !== seg.colorBucket) {
-        seg.colorBucket = bucket;
-        needsRebuild = true;
-      }
-    }
-
-    if (pass.segments.length === 0) {
-      this._destroyPrimitive(pass.primitive);
-      this.completedPasses = [];
-      return;
-    }
-
-    if (!allowRebuild) {
-      if (removed) needsRebuild = true;
-      else return;
-    }
-
-    if (!needsRebuild && !removed) return;
-
-    const next = this._buildStripFromSegments(pass.segments, currentTime);
-    if (!next) return;
-
-    this.viewer.scene.groundPrimitives.add(next);
-    this._destroyPrimitive(pass.primitive);
-    pass.primitive = next;
   }
 
   resetSampling() {

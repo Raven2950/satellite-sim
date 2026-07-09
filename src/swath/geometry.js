@@ -3,7 +3,6 @@ import {
   computeGroundCartesian,
   computeEcefVelocity,
 } from '../orbit/propagate.js';
-import { swathColorForAge, secondsToDays } from './fade.js';
 
 const { Cartesian3, JulianDate, EllipsoidGeodesic } = Cesium;
 
@@ -294,56 +293,6 @@ export function chainsToStripInstances(chains, halfWidthM, ellipsoid, color) {
           },
         }),
       );
-    }
-  }
-  return instances;
-}
-
-/** 合并条带：每段独立褪色（用于跳转后 consolidate） */
-export function chainsToStripInstancesFromSegments(
-  segments,
-  halfWidthM,
-  ellipsoid,
-  fadeConfig,
-  currentTime,
-) {
-  const {
-    GeometryInstance,
-    PolygonGeometry,
-    PerInstanceColorAppearance,
-    ColorGeometryInstanceAttribute,
-    JulianDate,
-  } = Cesium;
-
-  const instances = [];
-  for (const seg of segments) {
-    const ageSec = JulianDate.secondsDifference(
-      currentTime,
-      seg.acquisitionTime,
-    );
-    const color = swathColorForAge(secondsToDays(ageSec), fadeConfig);
-    const renderChains = stitchAdjacentChains(seg.chains, ellipsoid);
-    for (const chain of renderChains) {
-      for (let i = 0; i < chain.length - 1; i++) {
-        const quad = buildSwathQuad(
-          chain[i],
-          chain[i + 1],
-          halfWidthM,
-          ellipsoid,
-        );
-        if (!quad) continue;
-        instances.push(
-          new GeometryInstance({
-            geometry: PolygonGeometry.fromPositions({
-              positions: quad,
-              vertexFormat: PerInstanceColorAppearance.VERTEX_FORMAT,
-            }),
-            attributes: {
-              color: ColorGeometryInstanceAttribute.fromColor(color),
-            },
-          }),
-        );
-      }
     }
   }
   return instances;

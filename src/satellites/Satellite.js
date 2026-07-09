@@ -249,7 +249,7 @@ export class Satellite {
     }
 
     await this.swathManager.flushJumpBucketsFinal();
-    this.swathManager.consolidateCompletedPasses(finalTime);
+    await this.swathManager.compactCompletedPasses(finalTime);
     this.swathManager.endJumpSim();
 
     const beginSec = initialSec + orbitCount * orbitPeriodSec;
