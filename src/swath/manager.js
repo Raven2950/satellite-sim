@@ -440,7 +440,6 @@ export class SwathManager {
         }
         batchChains = [];
         batchInstances = 0;
-        await new Promise((resolve) => setTimeout(resolve, 0));
       };
 
       for (const pass of passes) {
@@ -451,6 +450,7 @@ export class SwathManager {
           batchInstances + added > SWATH_INSTANCES_PER_PRIMITIVE
         ) {
           flushBatch();
+          await new Promise((resolve) => setTimeout(resolve, 0));
           batchAcq = pass.acquisitionTime;
         }
         batchChains.push(...pass.cachedChains);
@@ -458,6 +458,7 @@ export class SwathManager {
         pass.cachedChains = null;
       }
       flushBatch();
+      await new Promise((resolve) => setTimeout(resolve, 0));
     }
 
     this.completedPasses = compacted;
