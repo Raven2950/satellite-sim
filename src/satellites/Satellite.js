@@ -104,7 +104,7 @@ export class Satellite {
     return this._modelLoadPromise;
   }
 
-  update(currentTime) {
+  update(currentTime, { fastPlayback = false } = {}) {
     const sec = this._secondsSinceEpoch(currentTime);
     const pos = computeEcefPosition(currentTime, sec, this.config.orbit);
     const vel = computeEcefVelocity(currentTime, sec, this.config.orbit);
@@ -130,6 +130,7 @@ export class Satellite {
       sec - this._lastFrameSec > denseStep * 2
     ) {
       imaging = this._denseImagingAdvance(this._lastFrameSec, sec);
+      this.swathManager.flushActiveRebuild();
     } else {
       this.swathManager.preparePassFrame(
         currentTime,
@@ -159,7 +160,7 @@ export class Satellite {
     this.sensorCone.update(pos, nadirGround, vel);
     this._lastFrameSec = sec;
 
-    this.swathManager.updateFade(currentTime);
+    this.swathManager.updateFade(currentTime, { fastPlayback });
     this.swathCount = this.swathManager.count;
   }
 
@@ -189,7 +190,11 @@ export class Satellite {
         vel,
         this.ellipsoid,
       );
-      this.swathManager.appendSwathSample(lastImaging.nadirGround);
+      const isLast =
+        sec + stepSec * 0.001 >= toSec;
+      this.swathManager.appendSwathSample(lastImaging.nadirGround, {
+        deferRebuild: !isLast,
+      });
       if (sec >= toSec) break;
     }
 
@@ -244,6 +249,7 @@ export class Satellite {
     }
 
     await this.swathManager.flushJumpBucketsFinal();
+    this.swathManager.consolidateCompletedPasses(finalTime);
     this.swathManager.endJumpSim();
 
     const beginSec = initialSec + orbitCount * orbitPeriodSec;

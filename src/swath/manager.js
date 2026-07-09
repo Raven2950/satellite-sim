@@ -5,6 +5,7 @@ import {
   estimateStripInstances,
   stitchAdjacentChains,
   chainsToStripInstances,
+  chainsToStripInstancesFromSegments,
 } from './geometry.js';
 import {
   swathColorForAge,
@@ -28,6 +29,10 @@ const {
 
 /** 已完成条带褪色检查最小墙钟间隔（毫秒） */
 const FADE_CHECK_INTERVAL_MS = 1500;
+/** 倍速播放时褪色重建最小间隔（毫秒） */
+const FADE_FAST_PLAYBACK_MS = 10_000;
+/** 当前圈条带重建最小墙钟间隔（毫秒） */
+const ACTIVE_REBUILD_MIN_MS = 180;
 
 /**
  * 每圈 ground track 条带
@@ -59,6 +64,8 @@ export class SwathManager {
 
     this._jumpFinalTime = null;
     this._jumpBuckets = null;
+    this._activeDirty = false;
+    this._lastActiveRebuildMs = 0;
   }
 
   beginPass(currentTime, sec) {
@@ -101,10 +108,21 @@ export class SwathManager {
     }
   }
 
-  appendSwathSample(swathGround) {
+  appendSwathSample(swathGround, { deferRebuild = false } = {}) {
     if (!swathGround) return;
     this._advanceActivePoints(swathGround, this._activePoints);
-    this._rebuildActiveChains();
+    if (deferRebuild) {
+      this._activeDirty = true;
+      return;
+    }
+    this._rebuildActiveChains(true);
+  }
+
+  /** 稠密补采样结束后一次性重建当前圈条带 */
+  flushActiveRebuild() {
+    if (!this._activeDirty && this._activePoints.length < 2) return;
+    this._rebuildActiveChains(true);
+    this._activeDirty = false;
   }
 
   updateActivePass(currentTime, currentSec, orbitPeriodSec, swathGround) {
@@ -126,8 +144,15 @@ export class SwathManager {
     return stitchAdjacentChains(raw, this.ellipsoid);
   }
 
-  _rebuildActiveChains() {
+  _rebuildActiveChains(force = false) {
     if (this._activePoints.length < 2) return;
+    const now = performance.now();
+    if (!force && now - this._lastActiveRebuildMs < ACTIVE_REBUILD_MIN_MS) {
+      this._activeDirty = true;
+      return;
+    }
+    this._lastActiveRebuildMs = now;
+    this._activeDirty = false;
     this._rebuildActivePrimitive([this._activePoints]);
   }
 
@@ -344,6 +369,21 @@ export class SwathManager {
       this.ellipsoid,
       color,
     );
+    return this._createGroundPrimitive(instances);
+  }
+
+  _buildStripFromSegments(segments, currentTime) {
+    const instances = chainsToStripInstancesFromSegments(
+      segments,
+      this.halfWidthM,
+      this.ellipsoid,
+      this.fadeConfig,
+      currentTime,
+    );
+    return this._createGroundPrimitive(instances);
+  }
+
+  _createGroundPrimitive(instances) {
     if (instances.length === 0) return null;
 
     try {
@@ -363,6 +403,63 @@ export class SwathManager {
     }
   }
 
+  /**
+   * 跳转结束后合并所有历史条带为单个 Primitive（按段保留褪色数据）
+   */
+  consolidateCompletedPasses(currentTime) {
+    if (this.completedPasses.length <= 1) return;
+
+    const segments = [];
+    for (const pass of this.completedPasses) {
+      if (!pass.cachedChains?.length) continue;
+      const ageSec = JulianDate.secondsDifference(
+        currentTime,
+        pass.acquisitionTime,
+      );
+      const ageDays = secondsToDays(ageSec);
+      if (shouldHideSwath(ageDays, this.fadeConfig)) {
+        this._destroyPrimitive(pass.primitive);
+        pass.cachedChains = null;
+        continue;
+      }
+      segments.push({
+        chains: pass.cachedChains,
+        acquisitionTime: JulianDate.clone(
+          pass.acquisitionTime,
+          new JulianDate(),
+        ),
+        colorBucket: fadeColorBucket(ageDays, this.fadeConfig),
+      });
+      this._destroyPrimitive(pass.primitive);
+      pass.cachedChains = null;
+    }
+
+    if (segments.length === 0) {
+      this.completedPasses = [];
+      return;
+    }
+
+    const primitive = this._buildStripFromSegments(segments, currentTime);
+    if (!primitive) {
+      this.completedPasses = [];
+      return;
+    }
+
+    this.viewer.scene.groundPrimitives.add(primitive);
+    this.completedPasses = [
+      {
+        primitive,
+        consolidated: true,
+        segments,
+        acquisitionTime: JulianDate.clone(
+          segments[0].acquisitionTime,
+          new JulianDate(),
+        ),
+        colorBucket: -1,
+      },
+    ];
+  }
+
   _destroyPrimitive(primitive) {
     if (!primitive) return;
     this.viewer.scene.groundPrimitives.remove(primitive);
@@ -371,11 +468,22 @@ export class SwathManager {
     }
   }
 
-  updateFade(currentTime) {
+  updateFade(currentTime, { fastPlayback = false } = {}) {
     const wallNow = performance.now();
-    const allowRebuild =
-      wallNow - this._lastFadeWallMs >= FADE_CHECK_INTERVAL_MS;
+    const fadeInterval = fastPlayback
+      ? FADE_FAST_PLAYBACK_MS
+      : FADE_CHECK_INTERVAL_MS;
+    const allowRebuild = wallNow - this._lastFadeWallMs >= fadeInterval;
     if (allowRebuild) this._lastFadeWallMs = wallNow;
+
+    if (this.completedPasses.length === 1 && this.completedPasses[0].consolidated) {
+      this._updateConsolidatedFade(
+        this.completedPasses[0],
+        currentTime,
+        { allowRebuild: allowRebuild && !fastPlayback },
+      );
+      return;
+    }
 
     for (let i = this.completedPasses.length - 1; i >= 0; i--) {
       const pass = this.completedPasses[i];
@@ -393,7 +501,7 @@ export class SwathManager {
         continue;
       }
 
-      if (!allowRebuild) continue;
+      if (!allowRebuild || fastPlayback) continue;
 
       const bucket = fadeColorBucket(ageDays, this.fadeConfig);
       if (bucket === pass.colorBucket) continue;
@@ -406,6 +514,52 @@ export class SwathManager {
       this._destroyPrimitive(pass.primitive);
       pass.primitive = next;
     }
+  }
+
+  _updateConsolidatedFade(pass, currentTime, { allowRebuild }) {
+    let removed = false;
+    let needsRebuild = false;
+
+    for (let i = pass.segments.length - 1; i >= 0; i--) {
+      const seg = pass.segments[i];
+      const ageSec = JulianDate.secondsDifference(
+        currentTime,
+        seg.acquisitionTime,
+      );
+      const ageDays = secondsToDays(ageSec);
+
+      if (shouldHideSwath(ageDays, this.fadeConfig)) {
+        pass.segments.splice(i, 1);
+        removed = true;
+        continue;
+      }
+
+      const bucket = fadeColorBucket(ageDays, this.fadeConfig);
+      if (bucket !== seg.colorBucket) {
+        seg.colorBucket = bucket;
+        needsRebuild = true;
+      }
+    }
+
+    if (pass.segments.length === 0) {
+      this._destroyPrimitive(pass.primitive);
+      this.completedPasses = [];
+      return;
+    }
+
+    if (!allowRebuild) {
+      if (removed) needsRebuild = true;
+      else return;
+    }
+
+    if (!needsRebuild && !removed) return;
+
+    const next = this._buildStripFromSegments(pass.segments, currentTime);
+    if (!next) return;
+
+    this.viewer.scene.groundPrimitives.add(next);
+    this._destroyPrimitive(pass.primitive);
+    pass.primitive = next;
   }
 
   resetSampling() {
@@ -426,6 +580,7 @@ export class SwathManager {
     for (const pass of this.completedPasses) {
       this._destroyPrimitive(pass.primitive);
       pass.cachedChains = null;
+      pass.segments = null;
     }
     this.completedPasses = [];
     this._activeChains = [];
@@ -435,6 +590,8 @@ export class SwathManager {
     this._passStartSec = null;
     this._lastSec = null;
     this._lastFadeWallMs = 0;
+    this._activeDirty = false;
+    this._lastActiveRebuildMs = 0;
   }
 
   get count() {
