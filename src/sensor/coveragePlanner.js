@@ -66,6 +66,12 @@ export class CoverageGrid {
     return this.covered.size;
   }
 
+  mergeFrom(other) {
+    for (const key of other.covered) {
+      this.covered.add(key);
+    }
+  }
+
   clear() {
     this.covered.clear();
   }
@@ -78,13 +84,15 @@ const _scratchOffset = new Cartesian3();
 const _scratchTarget = new Cartesian3();
 
 /**
- * 默认对地；星下点进入已扫区域时锁定偏转角至本圈结束（仅影响白痕栅格/HUD）
+ * 默认对地；星下点进入历史已扫区域时锁定偏转角至本圈结束（仅影响白痕）
+ * 本圈内的实时标记单独累积，避免把刚扫过的条带误判为“重访”而提前偏转
  */
 export class CoveragePlanner {
   constructor(orbitConfig, sensorConfig) {
     this.orbitConfig = orbitConfig;
     this.sensorConfig = sensorConfig;
     this.grid = new CoverageGrid(sensorConfig.coverageCellDeg ?? 0.05);
+    this.sessionGrid = new CoverageGrid(sensorConfig.coverageCellDeg ?? 0.05);
     this.halfSwathM = (sensorConfig.swathWidthKm * 1000) / 2;
     this.altitudeM = orbitConfig.altitudeKm * 1000;
     this.maxRollDeg = sensorConfig.maxRollDeg ?? 30;
@@ -96,20 +104,51 @@ export class CoveragePlanner {
     this.currentRollDeg = 0;
   }
 
+  get coveredCellCount() {
+    return this.grid.coveredCellCount + this.sessionGrid.coveredCellCount;
+  }
+
   reset() {
     this.grid.clear();
+    this.sessionGrid.clear();
     this._prevSwath = null;
     this._passRollDeg = 0;
     this._passRollLocked = false;
     this.currentRollDeg = 0;
   }
 
-  /** 每圈开始时重置段内偏转状态 */
+  /** 每圈开始时：上一圈标记并入历史，并重置段内偏转状态 */
   beginPass() {
+    this.grid.mergeFrom(this.sessionGrid);
+    this.sessionGrid.clear();
     this._passRollDeg = 0;
     this._passRollLocked = false;
     this.currentRollDeg = 0;
     this._prevSwath = null;
+  }
+
+  _isCoveredAny(latDeg, lonDeg) {
+    return (
+      this.grid.isCovered(latDeg, lonDeg) ||
+      this.sessionGrid.isCovered(latDeg, lonDeg)
+    );
+  }
+
+  _markSession(swathGround, ellipsoid) {
+    if (this._prevSwath) {
+      this.sessionGrid.markSegment(
+        this._prevSwath,
+        swathGround,
+        this.halfSwathM,
+        ellipsoid,
+      );
+    } else {
+      this.sessionGrid.markFootprint(swathGround, this.halfSwathM, ellipsoid);
+    }
+    this._prevSwath = Cartesian3.clone(
+      swathGround,
+      this._prevSwath ?? new Cartesian3(),
+    );
   }
 
   /**
@@ -147,20 +186,7 @@ export class CoveragePlanner {
     }
 
     if (markGrid) {
-      if (this._prevSwath) {
-        this.grid.markSegment(
-          this._prevSwath,
-          swathGround,
-          this.halfSwathM,
-          ellipsoid,
-        );
-      } else {
-        this.grid.markFootprint(swathGround, this.halfSwathM, ellipsoid);
-      }
-      this._prevSwath = Cartesian3.clone(
-        swathGround,
-        this._prevSwath ?? new Cartesian3(),
-      );
+      this._markSession(swathGround, ellipsoid);
     }
 
     return {
@@ -202,7 +228,7 @@ export class CoveragePlanner {
         const lat = CesiumMath.toDegrees(c.latitude);
         const lon = CesiumMath.toDegrees(c.longitude);
 
-        if (this.grid.isCovered(lat, lon)) continue;
+        if (this._isCoveredAny(lat, lon)) continue;
 
         const rollDeg =
           side * CesiumMath.toDegrees(Math.atan2(crossDist, this.altitudeM));

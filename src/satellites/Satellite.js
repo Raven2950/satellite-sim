@@ -256,7 +256,7 @@ export class Satellite {
   }
 
   get coverageCellCount() {
-    return this.coveragePlanner.grid.coveredCellCount;
+    return this.coveragePlanner.coveredCellCount;
   }
 
   get currentRollDeg() {
