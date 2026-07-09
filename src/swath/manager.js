@@ -1,7 +1,6 @@
 import * as Cesium from 'cesium';
 import {
   sampleOrbitSwathChains,
-  sampleOrbitCoveragePass,
   estimateStripInstances,
   stitchAdjacentChains,
   chainsToStripInstances,
@@ -14,8 +13,6 @@ import {
 } from './fade.js';
 import {
   SWATH_SAMPLE_INTERVAL_M,
-  JUMP_SAMPLES_PER_ORBIT,
-  COVERAGE_JUMP_SAMPLES_PER_ORBIT,
   SWATH_INSTANCES_PER_PRIMITIVE,
 } from '../config/satellite.js';
 
@@ -60,6 +57,7 @@ export class SwathManager {
 
     this._jumpFinalTime = null;
     this._pendingPasses = [];
+    this._jumpSamplesPerOrbit = 80;
   }
 
   beginPass(currentTime, sec) {
@@ -73,10 +71,11 @@ export class SwathManager {
     this._coveragePlanner?.beginPass();
   }
 
-  /** 离线跳转开始前设置目标时刻（用于计算褪色） */
-  beginJumpSim(finalTime) {
+  /** 离线跳转开始前设置目标时刻与采样密度 */
+  beginJumpSim(finalTime, { samplesPerOrbit = 80 } = {}) {
     this._jumpFinalTime = JulianDate.clone(finalTime, new JulianDate());
     this._pendingPasses = [];
+    this._jumpSamplesPerOrbit = samplesPerOrbit;
   }
 
   endJumpSim() {
@@ -183,21 +182,7 @@ export class SwathManager {
     );
     const ageDays = secondsToDays(ageSec);
 
-    const coverageOpts = {
-      samplesPerOrbit: COVERAGE_JUMP_SAMPLES_PER_ORBIT,
-    };
-
     if (shouldHideSwath(ageDays, this.fadeConfig)) {
-      sampleOrbitCoveragePass(
-        passStartSec,
-        orbitPeriodSec,
-        this.orbitConfig,
-        this.sensorConfig,
-        coveragePlanner,
-        this.ellipsoid,
-        this.orbitEpoch,
-        coverageOpts,
-      );
       return;
     }
 
@@ -209,18 +194,7 @@ export class SwathManager {
       coveragePlanner,
       this.ellipsoid,
       this.orbitEpoch,
-      { markGrid: false, samplesPerOrbit: JUMP_SAMPLES_PER_ORBIT },
-    );
-
-    sampleOrbitCoveragePass(
-      passStartSec,
-      orbitPeriodSec,
-      this.orbitConfig,
-      this.sensorConfig,
-      coveragePlanner,
-      this.ellipsoid,
-      this.orbitEpoch,
-      coverageOpts,
+      { markGrid: false, samplesPerOrbit: this._jumpSamplesPerOrbit },
     );
 
     if (chains.length === 0) return;
@@ -263,7 +237,9 @@ export class SwathManager {
       const ageSec = JulianDate.secondsDifference(finalTime, batchAcq);
       const ageDays = secondsToDays(ageSec);
       const color = swathColorForAge(ageDays, this.fadeConfig);
-      const primitive = this._buildStripFromChains(batchChains, color);
+      const primitive = this._buildStripFromChains(batchChains, color, {
+        asynchronous: true,
+      });
       if (primitive) {
         this.viewer.scene.groundPrimitives.add(primitive);
         this.completedPasses.push({
@@ -365,7 +341,7 @@ export class SwathManager {
     this.passStartTime = null;
   }
 
-  _buildStripFromChains(chains, color) {
+  _buildStripFromChains(chains, color, { asynchronous = false } = {}) {
     const instances = chainsToStripInstances(
       chains,
       this.halfWidthM,
@@ -383,7 +359,7 @@ export class SwathManager {
           flat: true,
         }),
         classificationType: ClassificationType.TERRAIN,
-        asynchronous: false,
+        asynchronous,
       });
     } catch (err) {
       console.warn('swath strip failed:', err);

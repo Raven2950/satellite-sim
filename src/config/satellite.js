@@ -130,14 +130,34 @@ export const SWATH_SAMPLE_INTERVAL_M = 150;
 /** 时间轴跳变超过此秒数时重置条带采样（仅用于 scrub，不影响加速播放） */
 export const SWATH_SCRUB_RESET_SEC = 120;
 
-/** 离线跳转：每圈条带渲染采样点数 */
+/** Safari 实测可过：15 天 × 2 星 × 80 点/圈 */
+export const JUMP_REFERENCE_DAYS = 15;
+export const JUMP_REFERENCE_SATELLITES = 2;
+export const JUMP_REFERENCE_SAMPLES = 80;
+
+/** 离线跳转默认采样（短跳转用） */
 export const JUMP_SAMPLES_PER_ORBIT = 80;
 
-/** 离线跳转：覆盖栅格稀疏采样（与条带渲染解耦） */
-export const COVERAGE_JUMP_SAMPLES_PER_ORBIT = 36;
-
-/** 单个 GroundPrimitive 最大四边形数（flush 时分批） */
-export const SWATH_INSTANCES_PER_PRIMITIVE = 1800;
+/** 单个 GroundPrimitive 最大四边形数（小批降低 flush 峰值） */
+export const SWATH_INSTANCES_PER_PRIMITIVE = 900;
 
 /** 双星交错跳转：每 N 圈强制 flush pending 上屏 */
-export const JUMP_FLUSH_EVERY_ORBITS = 6;
+export const JUMP_FLUSH_EVERY_ORBITS = 4;
+
+/**
+ * 按跳转天数与卫星数缩放采样，使总条带四边形数 ≈ 15 天双星基准
+ * 30 天双星 → 约 40 点/圈，避免 Safari 在 ~75% 处 OOM
+ */
+export function computeJumpSamplesPerOrbit(
+  targetDays,
+  satelliteCount,
+  orbitPeriodSec,
+) {
+  const refOrbits = Math.floor((JUMP_REFERENCE_DAYS * 86400) / orbitPeriodSec);
+  const targetOrbits = Math.floor((targetDays * 86400) / orbitPeriodSec);
+  const scaled = Math.floor(
+    (refOrbits * JUMP_REFERENCE_SATELLITES * JUMP_REFERENCE_SAMPLES) /
+      Math.max(1, targetOrbits * Math.max(1, satelliteCount)),
+  );
+  return Math.max(28, Math.min(JUMP_REFERENCE_SAMPLES, scaled));
+}

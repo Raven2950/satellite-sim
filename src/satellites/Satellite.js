@@ -205,10 +205,10 @@ export class Satellite {
   }
 
   /** 离线跳转：初始化（由 registry 双星交错调用） */
-  beginJumpSimulation(anchor, targetSimSec) {
+  beginJumpSimulation(anchor, targetSimSec, samplesPerOrbit = 80) {
     const scratch = new JulianDate();
     const finalTime = JulianDate.addSeconds(anchor, targetSimSec, scratch);
-    this.swathManager.beginJumpSim(finalTime);
+    this.swathManager.beginJumpSim(finalTime, { samplesPerOrbit });
     this._jumpAnchor = JulianDate.clone(anchor, new JulianDate());
     this._jumpInitialSec = this._secondsSinceEpoch(anchor);
     return Math.floor(targetSimSec / this.orbitPeriodSec);

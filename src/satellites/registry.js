@@ -1,6 +1,6 @@
 import * as Cesium from 'cesium';
 import { Satellite } from './Satellite.js';
-import { JUMP_FLUSH_EVERY_ORBITS } from '../config/satellite.js';
+import { JUMP_FLUSH_EVERY_ORBITS, computeJumpSamplesPerOrbit } from '../config/satellite.js';
 
 const { JulianDate } = Cesium;
 
@@ -121,9 +121,19 @@ export class SatelliteRegistry {
     }
 
     const satellites = [...this.satellites.values()];
-    const orbitCount = satellites[0].beginJumpSimulation(anchor, totalSec);
+    const jumpSamples = computeJumpSamplesPerOrbit(
+      days,
+      satellites.length,
+      satellites[0].orbitPeriodSec,
+    );
+
+    const orbitCount = satellites[0].beginJumpSimulation(
+      anchor,
+      totalSec,
+      jumpSamples,
+    );
     for (let s = 1; s < satellites.length; s++) {
-      satellites[s].beginJumpSimulation(anchor, totalSec);
+      satellites[s].beginJumpSimulation(anchor, totalSec, jumpSamples);
     }
 
     if (orbitCount <= 0) {
