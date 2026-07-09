@@ -26,10 +26,8 @@ const {
 
 /** 已完成条带褪色检查最小墙钟间隔（毫秒） */
 const FADE_CHECK_INTERVAL_MS = 1500;
-/** 倍速播放时褪色/隐藏检查最小墙钟间隔（毫秒） */
+/** 倍速播放时历史条带褪色/隐藏检查最小墙钟间隔（毫秒） */
 const FADE_FAST_PLAYBACK_MS = 8000;
-/** 倍速时当前圈条带重建最小墙钟间隔（毫秒） */
-const ACTIVE_REBUILD_MIN_MS = 200;
 
 /**
  * 每圈 ground track 条带
@@ -62,8 +60,6 @@ export class SwathManager {
     this._jumpFinalTime = null;
     this._pendingPasses = [];
     this._jumpSamplesPerOrbit = 80;
-    this._activeDirty = false;
-    this._lastActiveRebuildMs = 0;
   }
 
   beginPass(currentTime, sec) {
@@ -107,21 +103,10 @@ export class SwathManager {
     }
   }
 
-  appendSwathSample(swathGround, { deferRebuild = false } = {}) {
+  appendSwathSample(swathGround) {
     if (!swathGround) return;
     this._advanceActivePoints(swathGround, this._activePoints);
-    if (deferRebuild) {
-      this._activeDirty = true;
-      return;
-    }
-    this._rebuildActiveChains(true);
-  }
-
-  /** 倍速稠密补采样结束后一次性重建当前圈条带 */
-  flushActiveRebuild() {
-    if (!this._activeDirty && this._activePoints.length < 2) return;
-    this._rebuildActiveChains(true);
-    this._activeDirty = false;
+    this._rebuildActiveChains();
   }
 
   updateActivePass(currentTime, currentSec, orbitPeriodSec, swathGround) {
@@ -143,15 +128,8 @@ export class SwathManager {
     return stitchAdjacentChains(raw, this.ellipsoid);
   }
 
-  _rebuildActiveChains(force = false) {
+  _rebuildActiveChains() {
     if (this._activePoints.length < 2) return;
-    const now = performance.now();
-    if (!force && now - this._lastActiveRebuildMs < ACTIVE_REBUILD_MIN_MS) {
-      this._activeDirty = true;
-      return;
-    }
-    this._lastActiveRebuildMs = now;
-    this._activeDirty = false;
     this._rebuildActivePrimitive([this._activePoints]);
   }
 
@@ -464,8 +442,6 @@ export class SwathManager {
     this._passStartSec = null;
     this._lastSec = null;
     this._lastFadeWallMs = 0;
-    this._activeDirty = false;
-    this._lastActiveRebuildMs = 0;
   }
 
   get count() {
