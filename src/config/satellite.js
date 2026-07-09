@@ -80,8 +80,7 @@ export function buildSatelliteConfigs({
   };
   const fade = {
     cycleDays: 30,
-    freshDays: 1,
-    /** true: 30 天后隐藏；false: 保留白→灰梯度但不消失 */
+    /** true: 30 天后隐藏；false: 15 天后保持灰 0.7 / α 0.6 */
     hideAfterCycle,
   };
 

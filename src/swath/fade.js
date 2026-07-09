@@ -2,17 +2,30 @@ import * as Cesium from 'cesium';
 
 const { Color } = Cesium;
 
-function smoothstep(edge0, edge1, x) {
-  const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-  return t * t * (3 - 2 * t);
+/** 分段褪色：第 1 天 / 2–15 天 / 15 天以后 */
+const FADE_BAND_DAY1 = { gray: 0.95, alpha: 0.9 };
+const FADE_BAND_DAY2_15 = { gray: 0.8, alpha: 0.8 };
+const FADE_BAND_AFTER_15 = { gray: 0.7, alpha: 0.6 };
+
+function styleForAge(ageDays) {
+  if (ageDays < 1) return FADE_BAND_DAY1;
+  if (ageDays < 15) return FADE_BAND_DAY2_15;
+  return FADE_BAND_AFTER_15;
+}
+
+function colorFromStyle({ gray, alpha }) {
+  return new Color(gray, gray, gray, alpha);
 }
 
 /**
- * 条带颜色：白 → 灰 → （可选）透明
- * hideAfterCycle=true 时 age>=cycleDays 完全透明；false 时钳在最淡灰档
+ * 条带颜色（分段常数，无连续渐变）
+ * - 第 1 天：灰 0.95 / α 0.9
+ * - 第 2–15 天：灰 0.8 / α 0.8
+ * - 第 15 天起：灰 0.7 / α 0.6
+ * hideAfterCycle=true 时 age>=cycleDays 完全隐藏；false 时 15 天后保持最淡档
  */
 export function swathColorForAge(ageDays, fadeConfig) {
-  const { cycleDays, freshDays = 1, hideAfterCycle = true } = fadeConfig;
+  const { cycleDays = 30, hideAfterCycle = true } = fadeConfig;
 
   if (ageDays < 0) {
     return Color.TRANSPARENT;
@@ -22,36 +35,21 @@ export function swathColorForAge(ageDays, fadeConfig) {
     return Color.TRANSPARENT;
   }
 
-  const effectiveAge = hideAfterCycle
-    ? ageDays
-    : Math.min(ageDays, cycleDays - 0.001);
-
-  const fadeSpan = cycleDays - freshDays;
-  const t = fadeSpan > 0 ? (effectiveAge - freshDays) / fadeSpan : 0;
-  const fadeT = Math.max(0, Math.min(1, t));
-
-  const whiteBlend = 1 - smoothstep(freshDays, freshDays + 0.75, effectiveAge);
-  const g = 0.55 + (1 - fadeT) * 0.4;
-  const alpha = 0.78 - fadeT * 0.68;
-
-  const r = 1 * whiteBlend + g * (1 - whiteBlend);
-  const gv = 1 * whiteBlend + g * (1 - whiteBlend);
-  const b = 1 * whiteBlend + g * (1 - whiteBlend);
-
-  return new Color(r, gv, b, alpha);
+  return colorFromStyle(styleForAge(ageDays));
 }
 
-/** 褪色重建分桶：按整天，避免高频 destroy/recreate */
+/** 褪色重建分桶：三档 + 隐藏 */
 export function fadeColorBucket(ageDays, fadeConfig) {
-  const { cycleDays, hideAfterCycle = true } = fadeConfig;
+  const { cycleDays = 30, hideAfterCycle = true } = fadeConfig;
   if (ageDays < 0) return -1;
   if (hideAfterCycle && ageDays >= cycleDays) return -1;
-  const capped = hideAfterCycle ? ageDays : Math.min(ageDays, cycleDays - 0.001);
-  return Math.floor(capped);
+  if (ageDays < 1) return 0;
+  if (ageDays < 15) return 1;
+  return 2;
 }
 
 export function shouldHideSwath(ageDays, fadeConfig) {
-  const { cycleDays, hideAfterCycle = true } = fadeConfig;
+  const { cycleDays = 30, hideAfterCycle = true } = fadeConfig;
   return hideAfterCycle && ageDays >= cycleDays;
 }
 

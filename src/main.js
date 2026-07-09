@@ -23,9 +23,6 @@ import './style.css';
 
 const { JulianDate } = Cesium;
 
-/** 用于确认 Pages 已加载最新构建 */
-export const APP_BUILD = '20250709-playback2';
-
 /** 后台每步最大仿真推进（秒） */
 const BG_SIM_CHUNK_SEC = 90;
 
@@ -173,8 +170,6 @@ async function applySimSettings(nextParams, ctx) {
 
 async function main() {
   const loadingEl = document.getElementById('loadingOverlay');
-  const buildEl = document.getElementById('buildVersion');
-  if (buildEl) buildEl.textContent = `版本 ${APP_BUILD}`;
   const simParams = { ...DEFAULT_SIM_PARAMS };
 
   try {
