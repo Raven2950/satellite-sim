@@ -24,7 +24,7 @@ import './style.css';
 const { JulianDate } = Cesium;
 
 /** 用于确认 Pages 已加载最新构建 */
-export const APP_BUILD = '20250709-jumpfix2';
+export const APP_BUILD = '20250709-revert-jump';
 
 /** 后台每步最大仿真推进（秒） */
 const BG_SIM_CHUNK_SEC = 90;
@@ -65,9 +65,7 @@ function startSimulationLoop(viewer, simClock, registry, timeControls, ctx) {
 
   const syncAndUpdate = () => {
     simClock.syncToViewer(viewer);
-    const fastPlayback =
-      !simClock.live && simClock.playing && simClock.multiplier >= 100;
-    registry.updateAll(simClock.currentTime, { fastPlayback });
+    registry.updateAll(simClock.currentTime);
   };
 
   /** 后台：把墙钟时间拆成多步仿真推进 */
@@ -85,9 +83,7 @@ function startSimulationLoop(viewer, simClock, registry, timeControls, ctx) {
         simClock.currentTime,
       );
       simClock.currentTime = simClock.clamp(simClock.currentTime);
-      registry.updateAll(simClock.currentTime, {
-        fastPlayback: simClock.multiplier >= 100,
-      });
+      registry.updateAll(simClock.currentTime);
       remaining -= chunk;
     }
     simClock.syncToViewer(viewer);

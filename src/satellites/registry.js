@@ -1,6 +1,5 @@
 import * as Cesium from 'cesium';
 import { Satellite } from './Satellite.js';
-import { JUMP_FLUSH_EVERY_ORBITS } from '../config/satellite.js';
 
 const { JulianDate } = Cesium;
 
@@ -38,9 +37,9 @@ export class SatelliteRegistry {
     }
   }
 
-  updateAll(currentTime, options = {}) {
+  updateAll(currentTime) {
     for (const sat of this.satellites.values()) {
-      sat.update(currentTime, options);
+      sat.update(currentTime);
     }
   }
 
@@ -120,37 +119,14 @@ export class SatelliteRegistry {
     }
 
     const satellites = [...this.satellites.values()];
-    const orbitCount = satellites[0].beginJumpSimulation(anchor, totalSec);
-    for (let s = 1; s < satellites.length; s++) {
-      satellites[s].beginJumpSimulation(anchor, totalSec);
-    }
-
-    if (orbitCount <= 0) {
-      for (const sat of satellites) {
-        sat.swathManager.endJumpSim();
-      }
-    } else {
-      // 双星按圈交错推进，避免「第一颗全量 + 第二颗叠加」导致内存峰值翻倍
-      for (let i = 0; i < orbitCount; i++) {
-        for (const sat of satellites) {
-          sat.simulateJumpOrbit(i);
-        }
-
-        if (i > 0 && i % JUMP_FLUSH_EVERY_ORBITS === 0) {
-          for (const sat of satellites) {
-            await sat.swathManager.flushJumpBucketsPartial();
-          }
-          onProgress?.((i / orbitCount) * 0.95);
-          await new Promise((resolve) => setTimeout(resolve, 0));
-        } else if (i % 15 === 0) {
-          onProgress?.((i / orbitCount) * 0.95);
-          await new Promise((resolve) => setTimeout(resolve, 0));
-        }
-      }
-
-      for (const sat of satellites) {
-        await sat.finalizeJumpSimulation(totalSec);
-      }
+    for (let i = 0; i < satellites.length; i++) {
+      const sat = satellites[i];
+      await sat.simulateToSec(anchor, totalSec, {
+        onProgress: (fraction) => {
+          const overall = (i + fraction) / satellites.length;
+          onProgress?.(overall * 0.95);
+        },
+      });
     }
 
     const finalT = JulianDate.addSeconds(anchor, totalSec, scratch);

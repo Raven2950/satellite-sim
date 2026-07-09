@@ -15,7 +15,6 @@ import {
 import {
   SWATH_SAMPLE_INTERVAL_M,
   JUMP_SAMPLES_PER_ORBIT,
-  COVERAGE_JUMP_SAMPLES_PER_ORBIT,
   SWATH_INSTANCES_PER_PRIMITIVE,
 } from '../config/satellite.js';
 
@@ -29,10 +28,6 @@ const {
 
 /** 已完成条带褪色检查最小墙钟间隔（毫秒） */
 const FADE_CHECK_INTERVAL_MS = 1500;
-/** 倍速播放时褪色重建最小间隔（毫秒） */
-const FADE_FAST_PLAYBACK_MS = 10_000;
-/** 当前圈条带重建最小墙钟间隔（毫秒） */
-const ACTIVE_REBUILD_MIN_MS = 180;
 
 /**
  * 每圈 ground track 条带
@@ -64,8 +59,6 @@ export class SwathManager {
 
     this._jumpFinalTime = null;
     this._jumpBuckets = null;
-    this._activeDirty = false;
-    this._lastActiveRebuildMs = 0;
   }
 
   beginPass(currentTime, sec) {
@@ -108,21 +101,10 @@ export class SwathManager {
     }
   }
 
-  appendSwathSample(swathGround, { deferRebuild = false } = {}) {
+  appendSwathSample(swathGround) {
     if (!swathGround) return;
     this._advanceActivePoints(swathGround, this._activePoints);
-    if (deferRebuild) {
-      this._activeDirty = true;
-      return;
-    }
-    this._rebuildActiveChains(true);
-  }
-
-  /** 稠密补采样结束后一次性重建当前圈条带 */
-  flushActiveRebuild() {
-    if (!this._activeDirty && this._activePoints.length < 2) return;
-    this._rebuildActiveChains(true);
-    this._activeDirty = false;
+    this._rebuildActiveChains();
   }
 
   updateActivePass(currentTime, currentSec, orbitPeriodSec, swathGround) {
@@ -144,15 +126,8 @@ export class SwathManager {
     return stitchAdjacentChains(raw, this.ellipsoid);
   }
 
-  _rebuildActiveChains(force = false) {
+  _rebuildActiveChains() {
     if (this._activePoints.length < 2) return;
-    const now = performance.now();
-    if (!force && now - this._lastActiveRebuildMs < ACTIVE_REBUILD_MIN_MS) {
-      this._activeDirty = true;
-      return;
-    }
-    this._lastActiveRebuildMs = now;
-    this._activeDirty = false;
     this._rebuildActivePrimitive([this._activePoints]);
   }
 
@@ -207,10 +182,6 @@ export class SwathManager {
     );
     const ageDays = secondsToDays(ageSec);
 
-    const coverageOpts = {
-      samplesPerOrbit: COVERAGE_JUMP_SAMPLES_PER_ORBIT,
-    };
-
     if (shouldHideSwath(ageDays, this.fadeConfig)) {
       sampleOrbitCoveragePass(
         passStartSec,
@@ -220,7 +191,6 @@ export class SwathManager {
         coveragePlanner,
         this.ellipsoid,
         this.orbitEpoch,
-        coverageOpts,
       );
       return;
     }
@@ -233,18 +203,7 @@ export class SwathManager {
       coveragePlanner,
       this.ellipsoid,
       this.orbitEpoch,
-      { markGrid: false, samplesPerOrbit: JUMP_SAMPLES_PER_ORBIT },
-    );
-
-    sampleOrbitCoveragePass(
-      passStartSec,
-      orbitPeriodSec,
-      this.orbitConfig,
-      this.sensorConfig,
-      coveragePlanner,
-      this.ellipsoid,
-      this.orbitEpoch,
-      coverageOpts,
+      { markGrid: true, samplesPerOrbit: JUMP_SAMPLES_PER_ORBIT },
     );
 
     if (chains.length === 0) return;
@@ -313,16 +272,12 @@ export class SwathManager {
     const ageDays = secondsToDays(ageSec);
     const color = swathColorForAge(ageDays, this.fadeConfig);
 
-    const chains = acc.chains;
-    const primitive = this._buildStripFromChains(chains, color, {
-      asynchronous: true,
-    });
-    acc.chains = null;
+    const primitive = this._buildStripFromChains(acc.chains, color);
     if (primitive) {
       this.viewer.scene.groundPrimitives.add(primitive);
       this.completedPasses.push({
         primitive,
-        cachedChains: null,
+        cachedChains: acc.chains,
         acquisitionTime: JulianDate.clone(
           acc.acquisitionTime,
           new JulianDate(),
@@ -382,7 +337,7 @@ export class SwathManager {
     this.passStartTime = null;
   }
 
-  _buildStripFromChains(chains, color, { asynchronous = false } = {}) {
+  _buildStripFromChains(chains, color) {
     const instances = chainsToStripInstances(
       chains,
       this.halfWidthM,
@@ -400,7 +355,7 @@ export class SwathManager {
           flat: true,
         }),
         classificationType: ClassificationType.TERRAIN,
-        asynchronous,
+        asynchronous: false,
       });
     } catch (err) {
       console.warn('swath strip failed:', err);
@@ -416,12 +371,10 @@ export class SwathManager {
     }
   }
 
-  updateFade(currentTime, { fastPlayback = false } = {}) {
+  updateFade(currentTime) {
     const wallNow = performance.now();
-    const fadeInterval = fastPlayback
-      ? FADE_FAST_PLAYBACK_MS
-      : FADE_CHECK_INTERVAL_MS;
-    const allowRebuild = wallNow - this._lastFadeWallMs >= fadeInterval;
+    const allowRebuild =
+      wallNow - this._lastFadeWallMs >= FADE_CHECK_INTERVAL_MS;
     if (allowRebuild) this._lastFadeWallMs = wallNow;
 
     for (let i = this.completedPasses.length - 1; i >= 0; i--) {
@@ -440,7 +393,7 @@ export class SwathManager {
         continue;
       }
 
-      if (!allowRebuild || fastPlayback || !pass.cachedChains?.length) continue;
+      if (!allowRebuild) continue;
 
       const bucket = fadeColorBucket(ageDays, this.fadeConfig);
       if (bucket === pass.colorBucket) continue;
@@ -473,7 +426,6 @@ export class SwathManager {
     for (const pass of this.completedPasses) {
       this._destroyPrimitive(pass.primitive);
       pass.cachedChains = null;
-      pass.segments = null;
     }
     this.completedPasses = [];
     this._activeChains = [];
@@ -483,8 +435,6 @@ export class SwathManager {
     this._passStartSec = null;
     this._lastSec = null;
     this._lastFadeWallMs = 0;
-    this._activeDirty = false;
-    this._lastActiveRebuildMs = 0;
   }
 
   get count() {

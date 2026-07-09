@@ -130,14 +130,11 @@ export const SWATH_SAMPLE_INTERVAL_M = 150;
 /** 时间轴跳变超过此秒数时重置条带采样（仅用于 scrub，不影响加速播放） */
 export const SWATH_SCRUB_RESET_SEC = 120;
 
-/** 离线跳转：每圈条带渲染采样点数（越低越省内存） */
-export const JUMP_SAMPLES_PER_ORBIT = 120;
-
-/** 离线跳转：每圈覆盖栅格稀疏采样（与渲染解耦） */
-export const COVERAGE_JUMP_SAMPLES_PER_ORBIT = 48;
+/** 离线跳转：每圈采样点数（渲染与内存平衡） */
+export const JUMP_SAMPLES_PER_ORBIT = 200;
 
 /** 单个 GroundPrimitive 最大四边形数，超出则分批 flush */
-export const SWATH_INSTANCES_PER_PRIMITIVE = 1500;
+export const SWATH_INSTANCES_PER_PRIMITIVE = 2200;
 
-/** 离线跳转每 N 圈强制 yield + 部分 flush（双星交错推进） */
-export const JUMP_FLUSH_EVERY_ORBITS = 4;
+/** 离线跳转每 N 圈强制 yield + 部分 flush */
+export const JUMP_FLUSH_EVERY_ORBITS = 10;
