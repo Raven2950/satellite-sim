@@ -26,6 +26,10 @@ const {
 
 /** 已完成条带褪色检查最小墙钟间隔（毫秒） */
 const FADE_CHECK_INTERVAL_MS = 1500;
+/** 倍速播放时褪色/隐藏检查最小墙钟间隔（毫秒） */
+const FADE_FAST_PLAYBACK_MS = 8000;
+/** 倍速时当前圈条带重建最小墙钟间隔（毫秒） */
+const ACTIVE_REBUILD_MIN_MS = 200;
 
 /**
  * 每圈 ground track 条带
@@ -58,6 +62,8 @@ export class SwathManager {
     this._jumpFinalTime = null;
     this._pendingPasses = [];
     this._jumpSamplesPerOrbit = 80;
+    this._activeDirty = false;
+    this._lastActiveRebuildMs = 0;
   }
 
   beginPass(currentTime, sec) {
@@ -101,10 +107,21 @@ export class SwathManager {
     }
   }
 
-  appendSwathSample(swathGround) {
+  appendSwathSample(swathGround, { deferRebuild = false } = {}) {
     if (!swathGround) return;
     this._advanceActivePoints(swathGround, this._activePoints);
-    this._rebuildActiveChains();
+    if (deferRebuild) {
+      this._activeDirty = true;
+      return;
+    }
+    this._rebuildActiveChains(true);
+  }
+
+  /** 倍速稠密补采样结束后一次性重建当前圈条带 */
+  flushActiveRebuild() {
+    if (!this._activeDirty && this._activePoints.length < 2) return;
+    this._rebuildActiveChains(true);
+    this._activeDirty = false;
   }
 
   updateActivePass(currentTime, currentSec, orbitPeriodSec, swathGround) {
@@ -126,8 +143,15 @@ export class SwathManager {
     return stitchAdjacentChains(raw, this.ellipsoid);
   }
 
-  _rebuildActiveChains() {
+  _rebuildActiveChains(force = false) {
     if (this._activePoints.length < 2) return;
+    const now = performance.now();
+    if (!force && now - this._lastActiveRebuildMs < ACTIVE_REBUILD_MIN_MS) {
+      this._activeDirty = true;
+      return;
+    }
+    this._lastActiveRebuildMs = now;
+    this._activeDirty = false;
     this._rebuildActivePrimitive([this._activePoints]);
   }
 
@@ -373,11 +397,14 @@ export class SwathManager {
     }
   }
 
-  updateFade(currentTime) {
+  updateFade(currentTime, { fastPlayback = false } = {}) {
     const wallNow = performance.now();
-    const allowRebuild =
-      wallNow - this._lastFadeWallMs >= FADE_CHECK_INTERVAL_MS;
-    if (allowRebuild) this._lastFadeWallMs = wallNow;
+    const fadeInterval = fastPlayback
+      ? FADE_FAST_PLAYBACK_MS
+      : FADE_CHECK_INTERVAL_MS;
+    const allowCheck = wallNow - this._lastFadeWallMs >= fadeInterval;
+    if (allowCheck) this._lastFadeWallMs = wallNow;
+    if (!allowCheck) return;
 
     for (let i = this.completedPasses.length - 1; i >= 0; i--) {
       const pass = this.completedPasses[i];
@@ -395,7 +422,7 @@ export class SwathManager {
         continue;
       }
 
-      if (!allowRebuild || !pass.cachedChains?.length) continue;
+      if (fastPlayback || !pass.cachedChains?.length) continue;
 
       const bucket = fadeColorBucket(ageDays, this.fadeConfig);
       if (bucket === pass.colorBucket) continue;
@@ -437,6 +464,8 @@ export class SwathManager {
     this._passStartSec = null;
     this._lastSec = null;
     this._lastFadeWallMs = 0;
+    this._activeDirty = false;
+    this._lastActiveRebuildMs = 0;
   }
 
   get count() {

@@ -103,7 +103,7 @@ export class Satellite {
     return this._modelLoadPromise;
   }
 
-  update(currentTime) {
+  update(currentTime, { fastPlayback = false } = {}) {
     const sec = this._secondsSinceEpoch(currentTime);
     const pos = computeEcefPosition(currentTime, sec, this.config.orbit);
     const vel = computeEcefVelocity(currentTime, sec, this.config.orbit);
@@ -121,14 +121,21 @@ export class Satellite {
       this.coveragePlanner.reset();
     }
 
-    const denseStep = this.orbitPeriodSec / 360;
+    const denseStep = fastPlayback
+      ? this.orbitPeriodSec / 90
+      : this.orbitPeriodSec / 360;
+    const markGrid = !fastPlayback;
     let imaging;
 
     if (
       this._lastFrameSec !== null &&
       sec - this._lastFrameSec > denseStep * 2
     ) {
-      imaging = this._denseImagingAdvance(this._lastFrameSec, sec);
+      imaging = this._denseImagingAdvance(this._lastFrameSec, sec, {
+        fastPlayback,
+        markGrid,
+      });
+      this.swathManager.flushActiveRebuild();
     } else {
       this.swathManager.preparePassFrame(
         currentTime,
@@ -141,8 +148,11 @@ export class Satellite {
         nadirGround,
         vel,
         this.ellipsoid,
+        { markGrid },
       );
-      this.swathManager.appendSwathSample(imaging.nadirGround);
+      this.swathManager.appendSwathSample(imaging.nadirGround, {
+        deferRebuild: fastPlayback,
+      });
       this.swathManager._lastSec = sec;
     }
 
@@ -158,13 +168,15 @@ export class Satellite {
     this.sensorCone.update(pos, nadirGround, vel);
     this._lastFrameSec = sec;
 
-    this.swathManager.updateFade(currentTime);
+    this.swathManager.updateFade(currentTime, { fastPlayback });
     this.swathCount = this.swathManager.count;
   }
 
   /** 倍速大步长时稠密补采样，避免当前圈条带拉成跨球面大三角 */
-  _denseImagingAdvance(fromSec, toSec) {
-    const stepSec = this.orbitPeriodSec / 360;
+  _denseImagingAdvance(fromSec, toSec, { fastPlayback = false, markGrid = true } = {}) {
+    const stepSec = fastPlayback
+      ? this.orbitPeriodSec / 90
+      : this.orbitPeriodSec / 360;
     const scratch = new JulianDate();
     let lastImaging = null;
 
@@ -187,8 +199,12 @@ export class Satellite {
         nadir,
         vel,
         this.ellipsoid,
+        { markGrid },
       );
-      this.swathManager.appendSwathSample(lastImaging.nadirGround);
+      const isLast = sec + stepSec * 0.001 >= toSec;
+      this.swathManager.appendSwathSample(lastImaging.nadirGround, {
+        deferRebuild: !isLast,
+      });
       if (sec >= toSec) break;
     }
 

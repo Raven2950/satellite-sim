@@ -38,9 +38,9 @@ export class SatelliteRegistry {
     }
   }
 
-  updateAll(currentTime) {
+  updateAll(currentTime, options = {}) {
     for (const sat of this.satellites.values()) {
-      sat.update(currentTime);
+      sat.update(currentTime, options);
     }
   }
 

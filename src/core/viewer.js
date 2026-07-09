@@ -108,6 +108,8 @@ export function createViewer(containerId) {
   viewer.scene.fog.enabled = false;
   viewer.scene.backgroundColor = Color.fromCssColorString('#0a1020');
   viewer.scene.moon.show = false;
+  viewer.scene.requestRenderMode = true;
+  viewer.scene.maximumRenderTimeChange = Infinity;
 
   return viewer;
 }
