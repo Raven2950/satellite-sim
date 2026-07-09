@@ -131,7 +131,13 @@ export const SWATH_SAMPLE_INTERVAL_M = 150;
 export const SWATH_SCRUB_RESET_SEC = 120;
 
 /** 离线跳转：每圈条带渲染采样点数 */
-export const JUMP_SAMPLES_PER_ORBIT = 120;
+export const JUMP_SAMPLES_PER_ORBIT = 80;
+
+/** 离线跳转：覆盖栅格稀疏采样（与条带渲染解耦） */
+export const COVERAGE_JUMP_SAMPLES_PER_ORBIT = 36;
 
 /** 单个 GroundPrimitive 最大四边形数（flush 时分批） */
-export const SWATH_INSTANCES_PER_PRIMITIVE = 2200;
+export const SWATH_INSTANCES_PER_PRIMITIVE = 1800;
+
+/** 双星交错跳转：每 N 圈强制 flush pending 上屏 */
+export const JUMP_FLUSH_EVERY_ORBITS = 6;

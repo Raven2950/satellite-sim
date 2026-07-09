@@ -15,6 +15,7 @@ import {
 import {
   SWATH_SAMPLE_INTERVAL_M,
   JUMP_SAMPLES_PER_ORBIT,
+  COVERAGE_JUMP_SAMPLES_PER_ORBIT,
   SWATH_INSTANCES_PER_PRIMITIVE,
 } from '../config/satellite.js';
 
@@ -182,6 +183,10 @@ export class SwathManager {
     );
     const ageDays = secondsToDays(ageSec);
 
+    const coverageOpts = {
+      samplesPerOrbit: COVERAGE_JUMP_SAMPLES_PER_ORBIT,
+    };
+
     if (shouldHideSwath(ageDays, this.fadeConfig)) {
       sampleOrbitCoveragePass(
         passStartSec,
@@ -191,6 +196,7 @@ export class SwathManager {
         coveragePlanner,
         this.ellipsoid,
         this.orbitEpoch,
+        coverageOpts,
       );
       return;
     }
@@ -203,7 +209,18 @@ export class SwathManager {
       coveragePlanner,
       this.ellipsoid,
       this.orbitEpoch,
-      { markGrid: true, samplesPerOrbit: JUMP_SAMPLES_PER_ORBIT },
+      { markGrid: false, samplesPerOrbit: JUMP_SAMPLES_PER_ORBIT },
+    );
+
+    sampleOrbitCoveragePass(
+      passStartSec,
+      orbitPeriodSec,
+      this.orbitConfig,
+      this.sensorConfig,
+      coveragePlanner,
+      this.ellipsoid,
+      this.orbitEpoch,
+      coverageOpts,
     );
 
     if (chains.length === 0) return;
@@ -214,8 +231,24 @@ export class SwathManager {
     });
   }
 
-  /** 跳转采样结束后：按褪色分桶合并并分批上屏 */
+  /** 跳转过程中周期性 flush pending，避免链点无限累积 */
+  async flushPendingPartial() {
+    if (!this._pendingPasses.length || !this._jumpFinalTime) return;
+    await this._commitPendingPasses(this._jumpFinalTime);
+  }
+
+  /** 跳转采样结束后：flush 剩余 pending */
   async flushPendingPasses(finalTime, { onProgress } = {}) {
+    if (this._pendingPasses.length === 0) {
+      onProgress?.(1);
+      return;
+    }
+    await this._commitPendingPasses(finalTime, { onProgress });
+    onProgress?.(1);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  async _commitPendingPasses(finalTime, { onProgress } = {}) {
     const pending = this._pendingPasses;
     this._pendingPasses = [];
     if (pending.length === 0) return;
@@ -281,7 +314,6 @@ export class SwathManager {
     }
 
     flushBatch();
-    onProgress?.(1);
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
 

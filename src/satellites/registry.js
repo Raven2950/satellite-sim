@@ -1,5 +1,6 @@
 import * as Cesium from 'cesium';
 import { Satellite } from './Satellite.js';
+import { JUMP_FLUSH_EVERY_ORBITS } from '../config/satellite.js';
 
 const { JulianDate } = Cesium;
 
@@ -100,7 +101,8 @@ export class SatelliteRegistry {
   }
 
   /**
-   * 离线快进到仿真第 targetDays 天（按圈采样，结束时一次性刷新场景）
+   * 离线快进到仿真第 targetDays 天
+   * 双星按圈交错推进 + 周期性 flush，避免顺序跑满一颗再跑第二颗导致内存峰值
    */
   async simulateToSimDays(targetDays, simClock, { onProgress } = {}) {
     const days = Math.max(0, targetDays);
@@ -119,14 +121,36 @@ export class SatelliteRegistry {
     }
 
     const satellites = [...this.satellites.values()];
-    for (let i = 0; i < satellites.length; i++) {
-      const sat = satellites[i];
-      await sat.simulateToSec(anchor, totalSec, {
-        onProgress: (fraction) => {
-          const overall = (i + fraction) / satellites.length;
-          onProgress?.(overall * 0.95);
-        },
-      });
+    const orbitCount = satellites[0].beginJumpSimulation(anchor, totalSec);
+    for (let s = 1; s < satellites.length; s++) {
+      satellites[s].beginJumpSimulation(anchor, totalSec);
+    }
+
+    if (orbitCount <= 0) {
+      for (const sat of satellites) {
+        sat.swathManager.endJumpSim();
+      }
+    } else {
+      for (let i = 0; i < orbitCount; i++) {
+        for (const sat of satellites) {
+          sat.simulateJumpOrbit(i);
+        }
+
+        if (i > 0 && i % JUMP_FLUSH_EVERY_ORBITS === 0) {
+          for (const sat of satellites) {
+            await sat.swathManager.flushPendingPartial();
+          }
+          onProgress?.((i / orbitCount) * 0.95);
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        } else if (i % 12 === 0) {
+          onProgress?.((i / orbitCount) * 0.95);
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      }
+
+      for (const sat of satellites) {
+        await sat.finalizeJumpSimulation(totalSec);
+      }
     }
 
     const finalT = JulianDate.addSeconds(anchor, totalSec, scratch);
