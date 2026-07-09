@@ -4,7 +4,7 @@ import {
   computeEcefVelocity,
 } from '../orbit/propagate.js';
 
-const { Cartesian3, JulianDate } = Cesium;
+const { Cartesian3, JulianDate, EllipsoidGeodesic } = Cesium;
 
 const _scratchJulian = new JulianDate();
 
@@ -96,25 +96,80 @@ function _splitAtDiscontinuities(points) {
   return chains;
 }
 
-/** 对地→偏转切换处：沿球面短过渡，避免 A/B 段之间视觉断点 */
+/** 偏转/切段间距小于此值时自动桥接（米） */
+const STITCH_MAX_GAP_M = 600_000;
+
+/** 对地↔偏转切换：沿椭球大地线密采样过渡，保证条带中心线连续 */
 export function bridgeSwathTransition(fromGround, toGround, ellipsoid, steps) {
   if (Cartesian3.distance(fromGround, toGround) < 1) {
-    return [Cartesian3.clone(fromGround), Cartesian3.clone(toGround)];
+    return [Cartesian3.clone(fromGround)];
   }
 
-  const dist = Cartesian3.distance(fromGround, toGround);
+  const c0 = ellipsoid.cartesianToCartographic(fromGround);
+  const c1 = ellipsoid.cartesianToCartographic(toGround);
+  const geodesic = new EllipsoidGeodesic(c0, c1, ellipsoid);
+  const surfaceDist = geodesic.surfaceDistance;
   const stepCount =
-    steps ?? Math.max(8, Math.min(32, Math.ceil(dist / 25_000)));
+    steps ??
+    Math.max(12, Math.min(64, Math.ceil(surfaceDist / 2500)));
 
   const points = [];
   for (let i = 0; i <= stepCount; i++) {
-    const t = i / stepCount;
-    const raw = Cartesian3.lerp(fromGround, toGround, t, new Cartesian3());
-    const carto = ellipsoid.cartesianToCartographic(raw);
-    carto.height = 0;
+    const carto = geodesic.interpolateUsingSurfaceDistance(
+      (surfaceDist * i) / stepCount,
+    );
     points.push(ellipsoid.cartographicToCartesian(carto));
   }
   return points;
+}
+
+/** 将过渡点追加到链中（跳过与末点重合的首点） */
+export function appendBridgeIntoChain(chain, fromGround, toGround, ellipsoid) {
+  const bridge = bridgeSwathTransition(fromGround, toGround, ellipsoid);
+  for (let i = 1; i < bridge.length; i++) {
+    const p = bridge[i];
+    const last = chain[chain.length - 1];
+    if (!last || Cartesian3.distanceSquared(last, p) > 0.25) {
+      chain.push(Cartesian3.clone(p));
+    }
+  }
+}
+
+function _pushPointDedup(chain, point) {
+  const last = chain[chain.length - 1];
+  if (!last || Cartesian3.distanceSquared(last, point) > 0.25) {
+    chain.push(Cartesian3.clone(point));
+  }
+}
+
+/**
+ * 合并相邻链：小间隙插入大地线桥，大间隙保留（如反子午线）
+ */
+export function stitchAdjacentChains(chains, ellipsoid, maxGapM = STITCH_MAX_GAP_M) {
+  if (!chains.length) return [];
+  const valid = chains.filter((c) => c.length >= 2);
+  if (valid.length <= 1) return valid;
+
+  const merged = [valid[0].map((p) => Cartesian3.clone(p))];
+
+  for (let i = 1; i < valid.length; i++) {
+    const next = valid[i];
+    const current = merged[merged.length - 1];
+    const end = current[current.length - 1];
+    const start = next[0];
+    const gap = Cartesian3.distance(end, start);
+
+    if (gap <= maxGapM) {
+      appendBridgeIntoChain(current, end, start, ellipsoid);
+      for (let j = 1; j < next.length; j++) {
+        _pushPointDedup(current, next[j]);
+      }
+    } else {
+      merged.push(next.map((p) => Cartesian3.clone(p)));
+    }
+  }
+
+  return merged;
 }
 
 /**
@@ -158,24 +213,17 @@ export function sampleOrbitSwathChains(
     });
 
     if (chain.length > 0 && plan.isRolled !== prevRolled) {
-      if (chain.length >= 2) chains.push(chain);
       const from = chain[chain.length - 1] ?? prevNadir;
-      if (from) {
-        const bridgeStart = prevRolled ? from : prevNadir ?? from;
-        const bridgeEnd = plan.isRolled
-          ? plan.swathGround
-          : plan.nadirGround ?? plan.swathGround;
-        const bridge = bridgeSwathTransition(
-          bridgeStart,
-          bridgeEnd,
-          ellipsoid,
-        );
-        if (bridge.length >= 2) chains.push(bridge);
+      const bridgeStart = prevRolled ? from : prevNadir ?? from;
+      const bridgeEnd = plan.isRolled
+        ? plan.swathGround
+        : plan.nadirGround ?? plan.swathGround;
+      if (bridgeStart && bridgeEnd) {
+        appendBridgeIntoChain(chain, bridgeStart, bridgeEnd, ellipsoid);
       }
-      chain = [];
     }
 
-    chain.push(Cartesian3.clone(plan.swathGround));
+    _pushPointDedup(chain, plan.swathGround);
     prevRolled = plan.isRolled;
     prevNadir = nadir;
 
@@ -196,8 +244,9 @@ export function chainsToStripInstances(chains, halfWidthM, ellipsoid, color) {
     ColorGeometryInstanceAttribute,
   } = Cesium;
 
+  const renderChains = stitchAdjacentChains(chains, ellipsoid);
   const instances = [];
-  for (const chain of chains) {
+  for (const chain of renderChains) {
     for (let i = 0; i < chain.length - 1; i++) {
       const quad = buildSwathQuad(
         chain[i],

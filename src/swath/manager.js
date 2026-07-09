@@ -2,7 +2,8 @@ import * as Cesium from 'cesium';
 import {
   sampleGroundTrackPath,
   sampleOrbitSwathChains,
-  bridgeSwathTransition,
+  appendBridgeIntoChain,
+  stitchAdjacentChains,
   chainsToStripInstances,
 } from './geometry.js';
 import { swathColorForAge, fadeColorBucket, secondsToDays, shouldHideSwath } from './fade.js';
@@ -78,31 +79,22 @@ export class SwathManager {
     }
   }
 
-  /** 当前圈：沿实际成像地面点延伸（对地或锁角偏转） */
+  /** 当前圈：单条连续链，偏转切换时插入大地线过渡点 */
   appendSwathSample(swathGround, isRolled = false, nadirGround = null) {
     if (!swathGround) return;
 
     if (this._activePoints.length > 0 && isRolled !== this._activeRolled) {
-      if (this._activePoints.length >= 2) {
-        this._activeChains.push(this._activePoints);
+      const from = this._activePoints[this._activePoints.length - 1];
+      const bridgeStart = this._activeRolled ? from : nadirGround ?? from;
+      const bridgeEnd = isRolled ? swathGround : nadirGround ?? swathGround;
+      if (bridgeStart && bridgeEnd) {
+        appendBridgeIntoChain(
+          this._activePoints,
+          bridgeStart,
+          bridgeEnd,
+          this.ellipsoid,
+        );
       }
-      const from =
-        this._activePoints[this._activePoints.length - 1] ?? null;
-      if (from) {
-        const bridgeStart = this._activeRolled ? from : nadirGround ?? from;
-        const bridgeEnd = isRolled ? swathGround : nadirGround ?? swathGround;
-        if (bridgeStart && bridgeEnd) {
-          const bridge = bridgeSwathTransition(
-            bridgeStart,
-            bridgeEnd,
-            this.ellipsoid,
-          );
-          if (bridge.length >= 2) {
-            this._activeChains.push(bridge);
-          }
-        }
-      }
-      this._activePoints = [];
     }
 
     this._activeRolled = isRolled;
@@ -125,25 +117,21 @@ export class SwathManager {
   }
 
   _collectActiveChains() {
-    const chains = this._activeChains.map((c) =>
-      c.map((p) => Cartesian3.clone(p)),
-    );
-    if (this._activePoints.length >= 2) {
-      chains.push(this._activePoints.map((p) => Cartesian3.clone(p)));
+    const raw = [];
+    for (const chain of this._activeChains) {
+      if (chain.length >= 2) {
+        raw.push(chain.map((p) => Cartesian3.clone(p)));
+      }
     }
-    return chains;
+    if (this._activePoints.length >= 2) {
+      raw.push(this._activePoints.map((p) => Cartesian3.clone(p)));
+    }
+    return stitchAdjacentChains(raw, this.ellipsoid);
   }
 
   _rebuildActiveChains() {
-    const chains = this._activeChains.map((c) =>
-      c.map((p) => Cartesian3.clone(p)),
-    );
-    if (this._activePoints.length >= 2) {
-      chains.push(this._activePoints.map((p) => Cartesian3.clone(p)));
-    }
-    if (chains.length > 0) {
-      this._rebuildActivePrimitive(chains);
-    }
+    if (this._activePoints.length < 2) return;
+    this._rebuildActivePrimitive([this._activePoints]);
   }
 
   setCoveragePlanner(coveragePlanner) {
@@ -166,6 +154,9 @@ export class SwathManager {
 
     const tipIdx = points.length - 1;
     const prev = points[tipIdx - 1];
+    if (Cartesian3.distance(points[tipIdx], currentGround) < 0.5) {
+      return;
+    }
     points[tipIdx] = Cartesian3.clone(currentGround);
 
     if (Cartesian3.distance(prev, currentGround) >= SWATH_SAMPLE_INTERVAL_M) {
