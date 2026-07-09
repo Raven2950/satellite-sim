@@ -142,11 +142,7 @@ export class Satellite {
         vel,
         this.ellipsoid,
       );
-      this.swathManager.appendSwathSample(
-        imaging.swathGround,
-        imaging.isRolled,
-        imaging.nadirGround,
-      );
+      this.swathManager.appendSwathSample(imaging.nadirGround);
       this.swathManager._lastSec = sec;
     }
 
@@ -192,11 +188,7 @@ export class Satellite {
         vel,
         this.ellipsoid,
       );
-      this.swathManager.appendSwathSample(
-        lastImaging.swathGround,
-        lastImaging.isRolled,
-        lastImaging.nadirGround,
-      );
+      this.swathManager.appendSwathSample(lastImaging.nadirGround);
       if (sec >= toSec) break;
     }
 

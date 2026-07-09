@@ -2,7 +2,6 @@ import * as Cesium from 'cesium';
 import {
   sampleGroundTrackPath,
   sampleOrbitSwathChains,
-  appendBridgeIntoChain,
   stitchAdjacentChains,
   chainsToStripInstances,
 } from './geometry.js';
@@ -79,40 +78,22 @@ export class SwathManager {
     }
   }
 
-  /** 当前圈：单条连续链，偏转切换时插入大地线过渡点 */
-  appendSwathSample(swathGround, isRolled = false, nadirGround = null) {
+  /** 白痕始终沿星下点绘制；偏转仅用于覆盖栅格计算，不影响视觉 */
+  appendSwathSample(swathGround) {
     if (!swathGround) return;
-
-    if (this._activePoints.length > 0 && isRolled !== this._activeRolled) {
-      const from = this._activePoints[this._activePoints.length - 1];
-      const bridgeStart = this._activeRolled ? from : nadirGround ?? from;
-      const bridgeEnd = isRolled ? swathGround : nadirGround ?? swathGround;
-      if (bridgeStart && bridgeEnd) {
-        appendBridgeIntoChain(
-          this._activePoints,
-          bridgeStart,
-          bridgeEnd,
-          this.ellipsoid,
-        );
-      }
-    }
-
-    this._activeRolled = isRolled;
     this._advanceActivePoints(swathGround, this._activePoints);
     this._rebuildActiveChains();
   }
 
-  /** @deprecated 保留兼容；内部拆分为 preparePassFrame + appendSwathSample */
+  /** @deprecated */
   updateActivePass(
     currentTime,
     currentSec,
     orbitPeriodSec,
     swathGround,
-    isRolled = false,
-    nadirGround = null,
   ) {
     this.preparePassFrame(currentTime, currentSec, orbitPeriodSec);
-    this.appendSwathSample(swathGround, isRolled, nadirGround);
+    this.appendSwathSample(swathGround);
     this._lastSec = currentSec;
   }
 

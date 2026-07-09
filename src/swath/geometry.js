@@ -173,7 +173,7 @@ export function stitchAdjacentChains(chains, ellipsoid, maxGapM = STITCH_MAX_GAP
 }
 
 /**
- * 采样一整圈白痕链：对地段 + 触发后锁角偏转段（分段，避免 A→B 拉直线）
+ * 采样一整圈白痕链（始终沿星下点；偏转仅写入覆盖栅格）
  */
 export function sampleOrbitSwathChains(
   passStartSec,
@@ -191,10 +191,7 @@ export function sampleOrbitSwathChains(
 
   coveragePlanner.beginPass();
 
-  const chains = [];
-  let chain = [];
-  let prevRolled = false;
-  let prevNadir = null;
+  const chain = [];
 
   for (let t = passStartSec; t <= endSec + stepSec * 0.01; t += stepSec) {
     const sec = Math.min(t, endSec);
@@ -208,31 +205,18 @@ export function sampleOrbitSwathChains(
       ellipsoid,
     );
 
-    const plan = coveragePlanner.planImaging(jd, sec, nadir, vel, ellipsoid, {
+    coveragePlanner.planImaging(jd, sec, nadir, vel, ellipsoid, {
       markGrid,
     });
 
-    if (chain.length > 0 && plan.isRolled !== prevRolled) {
-      const from = chain[chain.length - 1] ?? prevNadir;
-      const bridgeStart = prevRolled ? from : prevNadir ?? from;
-      const bridgeEnd = plan.isRolled
-        ? plan.swathGround
-        : plan.nadirGround ?? plan.swathGround;
-      if (bridgeStart && bridgeEnd) {
-        appendBridgeIntoChain(chain, bridgeStart, bridgeEnd, ellipsoid);
-      }
-    }
-
-    _pushPointDedup(chain, plan.swathGround);
-    prevRolled = plan.isRolled;
-    prevNadir = nadir;
+    _pushPointDedup(chain, nadir);
 
     if (sec >= endSec) break;
   }
 
-  if (chain.length >= 2) chains.push(chain);
+  if (chain.length < 2) return [];
 
-  return chains.flatMap((c) => _splitAtDiscontinuities(c));
+  return _splitAtDiscontinuities(chain);
 }
 
 /** 将多段 ground chain 合并为条带 primitive 所需点列 */

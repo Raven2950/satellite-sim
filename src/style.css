@@ -201,9 +201,9 @@ body {
   background: rgba(0, 170, 210, 0.3);
 }
 
-.settings-apply:disabled {
-  opacity: 0.55;
-  cursor: wait;
+.build-version {
+  color: #5a9fd4;
+  font-weight: 600;
 }
 
 .view-toggle {
