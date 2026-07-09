@@ -387,81 +387,11 @@ export class SwathManager {
     }
   }
 
-  /**
-   * 跳转结束后按褪色分桶压缩 Primitive 数量（每批不超过实例上限，避免巨型 Primitive）
-   */
-  async compactCompletedPasses(currentTime) {
-    if (this.completedPasses.length <= 2) return;
-
-    const byBucket = new Map();
-
+  /** 跳转结束后释放链点缓存，降低双星场景内存占用（primitive 已上屏，无需再重建） */
+  releaseCompletedPassChainCache() {
     for (const pass of this.completedPasses) {
-      if (!pass.cachedChains?.length) {
-        this._destroyPrimitive(pass.primitive);
-        continue;
-      }
-
-      const ageSec = JulianDate.secondsDifference(
-        currentTime,
-        pass.acquisitionTime,
-      );
-      const ageDays = secondsToDays(ageSec);
-      if (shouldHideSwath(ageDays, this.fadeConfig)) {
-        this._destroyPrimitive(pass.primitive);
-        pass.cachedChains = null;
-        continue;
-      }
-
-      const bucket = fadeColorBucket(ageDays, this.fadeConfig);
-      if (!byBucket.has(bucket)) byBucket.set(bucket, []);
-      byBucket.get(bucket).push(pass);
+      pass.cachedChains = null;
     }
-
-    const compacted = [];
-
-    for (const [bucket, passes] of byBucket) {
-      let batchChains = [];
-      let batchInstances = 0;
-      let batchAcq = passes[0].acquisitionTime;
-
-      const flushBatch = () => {
-        if (batchChains.length === 0) return;
-        const ageSec = JulianDate.secondsDifference(currentTime, batchAcq);
-        const color = swathColorForAge(secondsToDays(ageSec), this.fadeConfig);
-        const primitive = this._buildStripFromChains(batchChains, color);
-        if (primitive) {
-          this.viewer.scene.groundPrimitives.add(primitive);
-          compacted.push({
-            primitive,
-            cachedChains: batchChains,
-            acquisitionTime: JulianDate.clone(batchAcq, new JulianDate()),
-            colorBucket: bucket,
-          });
-        }
-        batchChains = [];
-        batchInstances = 0;
-      };
-
-      for (const pass of passes) {
-        this._destroyPrimitive(pass.primitive);
-        const added = estimateStripInstances(pass.cachedChains);
-        if (
-          batchInstances > 0 &&
-          batchInstances + added > SWATH_INSTANCES_PER_PRIMITIVE
-        ) {
-          flushBatch();
-          await new Promise((resolve) => setTimeout(resolve, 0));
-          batchAcq = pass.acquisitionTime;
-        }
-        batchChains.push(...pass.cachedChains);
-        batchInstances += added;
-        pass.cachedChains = null;
-      }
-      flushBatch();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-
-    this.completedPasses = compacted;
   }
 
   _destroyPrimitive(primitive) {
@@ -496,7 +426,7 @@ export class SwathManager {
         continue;
       }
 
-      if (!allowRebuild || fastPlayback) continue;
+      if (!allowRebuild || fastPlayback || !pass.cachedChains?.length) continue;
 
       const bucket = fadeColorBucket(ageDays, this.fadeConfig);
       if (bucket === pass.colorBucket) continue;

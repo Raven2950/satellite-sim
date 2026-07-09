@@ -137,4 +137,4 @@ export const JUMP_SAMPLES_PER_ORBIT = 200;
 export const SWATH_INSTANCES_PER_PRIMITIVE = 2200;
 
 /** 离线跳转每 N 圈强制 yield + 部分 flush */
-export const JUMP_FLUSH_EVERY_ORBITS = 10;
+export const JUMP_FLUSH_EVERY_ORBITS = 5;
