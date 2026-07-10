@@ -43,7 +43,23 @@ export const CHINA_BOUNDS = {
 export const PARAM_LIMITS = {
   altitudeKm: { min: 400, max: 800, step: 10, default: 500 },
   swathWidthKm: { min: 20, max: 120, step: 5, default: 60 },
+  satelliteCount: { min: 1, max: 12, step: 1, default: 2 },
 };
+
+const SATELLITE_COLORS = [
+  '#00FFFF',
+  '#FF9A5C',
+  '#B8FF5C',
+  '#FF5CB8',
+  '#5C9AFF',
+  '#FFD15C',
+  '#C85CFF',
+  '#5CFFD1',
+  '#FF8C5C',
+  '#8CFF5C',
+  '#5C8CFF',
+  '#FF5C8C',
+];
 
 const SHARED_MODEL = {
   localUri: `${import.meta.env.BASE_URL}models/satellite.glb`,
@@ -57,68 +73,119 @@ const SHARED_MODEL = {
   yawDeg: 0,
 };
 
+export function satelliteDisplayName(index) {
+  if (index < 26) return `卫星 ${String.fromCharCode(65 + index)}`;
+  return `卫星 ${index + 1}`;
+}
+
+/** @returns {{ altitudeKm: number, swathWidthKm: number }} */
+export function createDefaultSatelliteSpec() {
+  return {
+    altitudeKm: PARAM_LIMITS.altitudeKm.default,
+    swathWidthKm: PARAM_LIMITS.swathWidthKm.default,
+  };
+}
+
+/** @param {number} count */
+export function createDefaultSatelliteSpecs(count) {
+  return Array.from({ length: count }, () => createDefaultSatelliteSpec());
+}
+
 /**
- * @param {{ altitudeKm: number, swathWidthKm: number, hideAfterCycle?: boolean }} params
+ * 同轨道高度组内均匀分布相位；不同高度默认 0° 起算（组内再均匀分布）
+ * @param {{ altitudeKm: number }[]} specs
+ */
+export function computeInitialPhases(specs) {
+  const phases = new Array(specs.length).fill(0);
+  const groups = new Map();
+
+  for (let i = 0; i < specs.length; i++) {
+    const alt = specs[i].altitudeKm;
+    if (!groups.has(alt)) groups.set(alt, []);
+    groups.get(alt).push(i);
+  }
+
+  for (const indices of groups.values()) {
+    const n = indices.length;
+    for (let j = 0; j < n; j++) {
+      phases[indices[j]] = (360 / n) * j;
+    }
+  }
+
+  return phases;
+}
+
+/**
+ * @param {{
+ *   satelliteCount: number,
+ *   satellites: { altitudeKm: number, swathWidthKm: number }[],
+ *   hideAfterCycle?: boolean,
+ * }} params
  */
 export function buildSatelliteConfigs({
-  altitudeKm,
-  swathWidthKm,
+  satelliteCount,
+  satellites,
   hideAfterCycle = true,
 }) {
-  const orbitBase = {
-    type: 'sun-sync',
-    altitudeKm,
-    inclinationDeg: 97.4,
-  };
-  const sensor = {
-    swathWidthKm,
-    maxRollDeg: 30,
-    rollDeg: 0,
-    coverageCellDeg: 0.05,
-    /** 覆盖栅格沿轨标记步长（米），与渲染采样解耦 */
-    coverageMarkStepM: 3000,
-  };
+  const count = Math.max(
+    1,
+    Math.min(
+      PARAM_LIMITS.satelliteCount.max,
+      satelliteCount ?? satellites?.length ?? 1,
+    ),
+  );
+
+  const specs = [];
+  for (let i = 0; i < count; i++) {
+    const src = satellites?.[i] ?? createDefaultSatelliteSpec();
+    specs.push({
+      altitudeKm: src.altitudeKm ?? PARAM_LIMITS.altitudeKm.default,
+      swathWidthKm: src.swathWidthKm ?? PARAM_LIMITS.swathWidthKm.default,
+    });
+  }
+
+  const phases = computeInitialPhases(specs);
   const fade = {
     cycleDays: 30,
     /** true: 30 天后隐藏；false: 10 天后保持灰 0.95 / α 0.8 */
     hideAfterCycle,
   };
 
-  return [
-    {
-      id: 'sat-1',
-      name: '卫星 A',
-      orbit: { ...orbitBase, initialPhaseDeg: 0 },
+  return specs.map((spec, index) => {
+    const sensor = {
+      swathWidthKm: spec.swathWidthKm,
+      maxRollDeg: 30,
+      rollDeg: 0,
+      coverageCellDeg: 0.05,
+      coverageMarkStepM: 3000,
+    };
+
+    return {
+      id: `sat-${index + 1}`,
+      name: satelliteDisplayName(index),
+      orbit: {
+        type: 'sun-sync',
+        altitudeKm: spec.altitudeKm,
+        inclinationDeg: 97.4,
+        initialPhaseDeg: phases[index],
+      },
       sensor: { ...sensor },
       fade: { ...fade },
       appearance: {
-        pointColor: '#00FFFF',
+        pointColor: SATELLITE_COLORS[index % SATELLITE_COLORS.length],
         pointSize: 14,
         model: { ...SHARED_MODEL },
         sensorCone: { footprintScale: 0.55 },
       },
-    },
-    {
-      id: 'sat-2',
-      name: '卫星 B',
-      orbit: { ...orbitBase, initialPhaseDeg: 180 },
-      sensor: { ...sensor },
-      fade: { ...fade },
-      appearance: {
-        pointColor: '#FF9A5C',
-        pointSize: 14,
-        model: { ...SHARED_MODEL },
-        sensorCone: { footprintScale: 0.55 },
-      },
-    },
-  ];
+    };
+  });
 }
 
 /** 默认双星配置 */
 export const DEFAULT_SIM_PARAMS = {
-  altitudeKm: PARAM_LIMITS.altitudeKm.default,
-  swathWidthKm: PARAM_LIMITS.swathWidthKm.default,
+  satelliteCount: PARAM_LIMITS.satelliteCount.default,
   hideAfterCycle: true,
+  satellites: createDefaultSatelliteSpecs(PARAM_LIMITS.satelliteCount.default),
 };
 
 export const DEFAULT_SATELLITES = buildSatelliteConfigs(DEFAULT_SIM_PARAMS);

@@ -123,13 +123,13 @@ export class SatelliteRegistry {
 
     const satellites = [...this.satellites.values()];
     const totalSatDays = days * satellites.length;
-    const jumpSamples = computeJumpSamplesPerOrbit(
-      totalSatDays,
-      satellites[0].orbitPeriodSec,
-    );
 
     for (let i = 0; i < satellites.length; i++) {
       const sat = satellites[i];
+      const jumpSamples = computeJumpSamplesPerOrbit(
+        totalSatDays,
+        sat.orbitPeriodSec,
+      );
       await sat.simulateToSec(anchor, totalSec, {
         samplesPerOrbit: jumpSamples,
         onProgress: (fraction) => {

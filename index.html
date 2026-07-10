@@ -15,13 +15,10 @@
           <h2>仿真设置</h2>
           <div class="settings-form">
             <label class="settings-field">
-              <span>轨道高度 (km)</span>
-              <input type="number" id="altitudeInput" class="settings-input" />
+              <span>卫星数量</span>
+              <input type="number" id="satelliteCountInput" class="settings-input" />
             </label>
-            <label class="settings-field">
-              <span>传感器视场 (km)</span>
-              <input type="number" id="swathInput" class="settings-input" />
-            </label>
+            <div id="satelliteParamsList" class="satellite-params-list"></div>
             <label class="settings-toggle">
               <input type="checkbox" id="hideAfterCycleToggle" checked />
               <span>30 天后隐藏痕迹</span>
@@ -29,7 +26,7 @@
             <button type="button" id="btnApplySettings" class="settings-apply">
               应用并重置仿真
             </button>
-            <p class="param-note">双星相位差 180°；应用后将清空条带并从第 0 天重算。</p>
+            <p class="param-note">同高度卫星自动均匀分布相位；应用后将清空条带并从第 0 天重算。</p>
           </div>
         </section>
       </div>

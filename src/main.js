@@ -27,30 +27,38 @@ const { JulianDate } = Cesium;
 const BG_SIM_CHUNK_SEC = 90;
 
 function renderParamDisplay(registry, simClock, simParams) {
-  const primary =
-    registry?.satellites?.values().next().value?.config ?? null;
-  const altitudeKm = primary?.orbit?.altitudeKm ?? simParams.altitudeKm;
-  const swathWidthKm =
-    primary?.sensor?.swathWidthKm ?? simParams.swathWidthKm;
-  const periodMin = (orbitalPeriodSeconds(altitudeKm) / 60).toFixed(1);
   const stats = registry?.getCoverageStats() ?? { satellites: [] };
   const simDays = simClock?.getElapsedSimDays?.()?.toFixed(1) ?? '0.0';
+  const configs = [...(registry?.satellites?.values() ?? [])].map(
+    (sat) => sat.config,
+  );
 
   const rows = [
     ['轨道类型', '晨昏轨道（太阳同步）'],
-    ['卫星数量', `${stats.satellites.length || 2} 颗（相位差 180°）`],
-    ['轨道高度', `${altitudeKm} km`],
-    ['传感器视场', `${swathWidthKm} km`],
-    ['轨道周期', `约 ${periodMin} 分钟/圈`],
+    ['卫星数量', `${stats.satellites.length || simParams.satelliteCount} 颗`],
     ['仿真天数', `${simDays} 天`],
   ];
 
-  document.getElementById('paramDisplay').innerHTML = rows
-    .map(
+  const detailRows = configs.map((config) => {
+    const periodMin = (
+      orbitalPeriodSeconds(config.orbit.altitudeKm) / 60
+    ).toFixed(1);
+    return [
+      config.name,
+      `${config.orbit.altitudeKm} km / ${config.sensor.swathWidthKm} km / 相位 ${config.orbit.initialPhaseDeg.toFixed(0)}° / ${periodMin} min`,
+    ];
+  });
+
+  document.getElementById('paramDisplay').innerHTML = [
+    ...rows.map(
       ([label, value]) =>
         `<div class="param-row"><dt>${label}</dt><dd>${value}</dd></div>`,
-    )
-    .join('');
+    ),
+    ...detailRows.map(
+      ([label, value]) =>
+        `<div class="param-row param-row-sat"><dt>${label}</dt><dd>${value}</dd></div>`,
+    ),
+  ].join('');
 }
 
 function startSimulationLoop(viewer, simClock, registry, timeControls, ctx) {
@@ -170,7 +178,10 @@ async function applySimSettings(nextParams, ctx) {
 
 async function main() {
   const loadingEl = document.getElementById('loadingOverlay');
-  const simParams = { ...DEFAULT_SIM_PARAMS };
+  const simParams = {
+    ...DEFAULT_SIM_PARAMS,
+    satellites: DEFAULT_SIM_PARAMS.satellites.map((spec) => ({ ...spec })),
+  };
 
   try {
     const viewer = createViewer('cesiumContainer');
@@ -247,7 +258,9 @@ async function main() {
     new SimSettingsControls({
       initialParams: simParams,
       onApply: async (next) => {
-        Object.assign(simParams, next);
+        simParams.satelliteCount = next.satelliteCount;
+        simParams.hideAfterCycle = next.hideAfterCycle;
+        simParams.satellites = next.satellites.map((spec) => ({ ...spec }));
         await applySimSettings(next, {
           simClock,
           registry,
