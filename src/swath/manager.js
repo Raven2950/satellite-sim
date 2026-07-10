@@ -1,6 +1,7 @@
 import * as Cesium from 'cesium';
 import {
   sampleOrbitSwathChains,
+  sampleGroundTrackPath,
   estimateStripInstances,
   stitchAdjacentChains,
   chainsToStripInstances,
@@ -24,10 +25,15 @@ const {
   Cartesian3,
 } = Cesium;
 
+import { orbitalPeriodSeconds } from '../orbit/propagate.js';
+
 /** 已完成条带褪色检查最小墙钟间隔（毫秒） */
 const FADE_CHECK_INTERVAL_MS = 1500;
 /** 倍速播放时历史条带褪色/隐藏检查最小墙钟间隔（毫秒） */
 const FADE_FAST_PLAYBACK_MS = 8000;
+
+/** 倍速播放时活跃/封存条带采样密度（与跳转模式解耦） */
+const PLAYBACK_SAMPLES_PER_ORBIT = 360;
 
 /**
  * 每圈 ground track 条带
@@ -44,6 +50,7 @@ export class SwathManager {
     this.orbitEpoch = orbitEpoch;
     this.ellipsoid = viewer.scene.globe.ellipsoid;
     this.halfWidthM = (sensorConfig.swathWidthKm * 1000) / 2;
+    this.orbitPeriodSec = orbitalPeriodSeconds(orbitConfig.altitudeKm);
 
     this.completedPasses = [];
     this.activePrimitive = null;
@@ -103,10 +110,22 @@ export class SwathManager {
     }
   }
 
-  appendSwathSample(swathGround) {
+  appendSwathSample(
+    swathGround,
+    { fastPlayback = false, sec = null, deferRebuild = false } = {},
+  ) {
     if (!swathGround) return;
-    this._advanceActivePoints(swathGround, this._activePoints);
-    this._rebuildActiveChains();
+    if (sec !== null) this._lastSec = sec;
+    if (!fastPlayback || this._jumpFinalTime) {
+      this._advanceActivePoints(swathGround, this._activePoints);
+    }
+    if (!deferRebuild) {
+      this._rebuildActiveChains({ fastPlayback });
+    }
+  }
+
+  rebuildActiveChains({ fastPlayback = false } = {}) {
+    this._rebuildActiveChains({ fastPlayback });
   }
 
   updateActivePass(currentTime, currentSec, orbitPeriodSec, swathGround) {
@@ -128,7 +147,34 @@ export class SwathManager {
     return stitchAdjacentChains(raw, this.ellipsoid);
   }
 
-  _rebuildActiveChains() {
+  _rebuildActiveChains({ fastPlayback = false } = {}) {
+    if (
+      fastPlayback &&
+      !this._jumpFinalTime &&
+      this._passStartSec !== null &&
+      this._lastSec !== null &&
+      this._lastSec > this._passStartSec
+    ) {
+      const endSec = Math.min(
+        this._lastSec,
+        this._passStartSec + this.orbitPeriodSec,
+      );
+      const chains = sampleGroundTrackPath(
+        this._passStartSec,
+        endSec,
+        this.orbitPeriodSec,
+        this.orbitConfig,
+        { ...this.sensorConfig, rollDeg: 0 },
+        this.ellipsoid,
+        this.orbitEpoch,
+        PLAYBACK_SAMPLES_PER_ORBIT,
+      );
+      const merged = stitchAdjacentChains(chains, this.ellipsoid);
+      if (merged.length === 0) return;
+      this._rebuildActivePrimitive(merged);
+      return;
+    }
+
     if (this._activePoints.length < 2) return;
     this._rebuildActivePrimitive([this._activePoints]);
   }
@@ -296,21 +342,38 @@ export class SwathManager {
   finalizePass(orbitPeriodSec, coveragePlanner) {
     if (this._passStartSec === null) return;
 
-    const chains = this._collectActiveChains();
+    const passStartSec = this._passStartSec;
+    const passStartTime = JulianDate.clone(this.passStartTime, new JulianDate());
 
-    if (chains.length === 0 && coveragePlanner) {
-      chains.push(
-        ...sampleOrbitSwathChains(
-          this._passStartSec,
-          orbitPeriodSec,
-          this.orbitConfig,
-          this.sensorConfig,
-          coveragePlanner,
-          this.ellipsoid,
-          this.orbitEpoch,
-          { markGrid: false },
-        ),
+    /** 倍速/实时：整圈重采样，避免 99.5% 截断与稀疏追点造成断点（跳转不走此分支） */
+    let chains;
+    if (!this._jumpFinalTime && coveragePlanner) {
+      chains = sampleOrbitSwathChains(
+        passStartSec,
+        orbitPeriodSec,
+        this.orbitConfig,
+        this.sensorConfig,
+        coveragePlanner,
+        this.ellipsoid,
+        this.orbitEpoch,
+        { markGrid: false, samplesPerOrbit: PLAYBACK_SAMPLES_PER_ORBIT },
       );
+    } else {
+      chains = this._collectActiveChains();
+      if (chains.length === 0 && coveragePlanner) {
+        chains.push(
+          ...sampleOrbitSwathChains(
+            passStartSec,
+            orbitPeriodSec,
+            this.orbitConfig,
+            this.sensorConfig,
+            coveragePlanner,
+            this.ellipsoid,
+            this.orbitEpoch,
+            { markGrid: false },
+          ),
+        );
+      }
     }
 
     this._destroyPrimitive(this.activePrimitive);
@@ -332,7 +395,7 @@ export class SwathManager {
       this.completedPasses.push({
         primitive,
         cachedChains: chains,
-        acquisitionTime: JulianDate.clone(this.passStartTime, new JulianDate()),
+        acquisitionTime: passStartTime,
         colorBucket: fadeColorBucket(0, this.fadeConfig),
       });
     }

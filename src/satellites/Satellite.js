@@ -155,11 +155,16 @@ export class Satellite {
     const markGrid = !fastPlayback;
     let imaging;
 
-    if (
+    const useDenseAdvance =
       this._lastFrameSec !== null &&
-      sec - this._lastFrameSec > denseStep * 2
-    ) {
-      imaging = this._denseImagingAdvance(this._lastFrameSec, sec, { markGrid });
+      sec > this._lastFrameSec &&
+      (fastPlayback || sec - this._lastFrameSec > denseStep * 2);
+
+    if (useDenseAdvance) {
+      imaging = this._denseImagingAdvance(this._lastFrameSec, sec, {
+        markGrid,
+        fastPlayback,
+      });
     } else {
       this.swathManager.preparePassFrame(
         currentTime,
@@ -174,8 +179,10 @@ export class Satellite {
         this.ellipsoid,
         { markGrid },
       );
-      this.swathManager.appendSwathSample(imaging.nadirGround);
-      this.swathManager._lastSec = sec;
+      this.swathManager.appendSwathSample(imaging.nadirGround, {
+        fastPlayback,
+        sec,
+      });
     }
 
     const modelCfg = this.config.appearance?.model ?? {};
@@ -195,7 +202,7 @@ export class Satellite {
   }
 
   /** 倍速大步长时稠密补采样，避免当前圈条带拉成跨球面大三角 */
-  _denseImagingAdvance(fromSec, toSec, { markGrid = true } = {}) {
+  _denseImagingAdvance(fromSec, toSec, { markGrid = true, fastPlayback = false } = {}) {
     const stepSec = this.orbitPeriodSec / 360;
     const scratch = new JulianDate();
     let lastImaging = null;
@@ -221,11 +228,18 @@ export class Satellite {
         this.ellipsoid,
         { markGrid },
       );
-      this.swathManager.appendSwathSample(lastImaging.nadirGround);
+      this.swathManager.appendSwathSample(lastImaging.nadirGround, {
+        fastPlayback,
+        sec,
+        deferRebuild: true,
+      });
       if (sec >= toSec) break;
     }
 
     this.swathManager._lastSec = toSec;
+    if (fastPlayback) {
+      this.swathManager.rebuildActiveChains({ fastPlayback: true });
+    }
 
     return (
       lastImaging ?? {
