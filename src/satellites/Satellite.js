@@ -10,15 +10,7 @@ import { SwathManager } from '../swath/manager.js';
 import { resolveSatelliteModelUri } from './modelLoader.js';
 import { SensorCone, computeNadirOrientation } from './sensorCone.js';
 
-const {
-  JulianDate,
-  Color,
-  LabelStyle,
-  VerticalOrigin,
-  HorizontalOrigin,
-  Cartesian2,
-  NearFarScalar,
-} = Cesium;
+const { JulianDate } = Cesium;
 
 export class Satellite {
   constructor(viewer, config, orbitEpoch) {
@@ -62,44 +54,22 @@ export class Satellite {
   _buildEntity() {
     const { id, name, appearance } = this.config;
     const sec = 0;
-    const entityDef = {
+
+    this.entity = this.viewer.entities.add({
       id,
       name,
       position: computeEcefPosition(this.orbitEpoch, sec, this.config.orbit),
       point: {
         show: false,
         pixelSize: appearance?.pointSize ?? 14,
-        color: Color.fromCssColorString(
+        color: Cesium.Color.fromCssColorString(
           appearance?.pointColor ?? '#00FFFF',
         ),
-        outlineColor: Color.BLACK,
+        outlineColor: Cesium.Color.BLACK,
         outlineWidth: 2,
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
       },
-    };
-
-    if (appearance?.showNameLabel) {
-      const accent = Color.fromCssColorString(
-        appearance?.pointColor ?? '#00FFFF',
-      );
-      entityDef.label = {
-        text: name,
-        show: true,
-        font: '11px sans-serif',
-        fillColor: Color.fromCssColorString('#e8eef7').withAlpha(0.92),
-        outlineColor: accent.withAlpha(0.95),
-        outlineWidth: 2,
-        style: LabelStyle.FILL_AND_OUTLINE,
-        horizontalOrigin: HorizontalOrigin.CENTER,
-        verticalOrigin: VerticalOrigin.BOTTOM,
-        pixelOffset: new Cartesian2(0, -52),
-        // 全球视角下相机距卫星约 1.3e7–2.5e7 m，此前 far=1.2e7 会把字缩到几乎不可见
-        scaleByDistance: new NearFarScalar(5.0e6, 1.15, 3.0e7, 0.72),
-        disableDepthTestDistance: Number.POSITIVE_INFINITY,
-      };
-    }
-
-    this.entity = this.viewer.entities.add(entityDef);
+    });
   }
 
   loadModel() {
@@ -179,10 +149,8 @@ export class Satellite {
         this.ellipsoid,
         { markGrid },
       );
-      this.swathManager.appendSwathSample(imaging.nadirGround, {
-        fastPlayback,
-        sec,
-      });
+      this.swathManager.appendSwathSample(imaging.nadirGround);
+      this.swathManager._lastSec = sec;
     }
 
     const modelCfg = this.config.appearance?.model ?? {};
@@ -202,7 +170,7 @@ export class Satellite {
   }
 
   /** 倍速大步长时稠密补采样，避免当前圈条带拉成跨球面大三角 */
-  _denseImagingAdvance(fromSec, toSec, { markGrid = true, fastPlayback = false } = {}) {
+  _denseImagingAdvance(fromSec, toSec, { markGrid = true } = {}) {
     const stepSec = this.orbitPeriodSec / 360;
     const scratch = new JulianDate();
     let lastImaging = null;
@@ -229,17 +197,13 @@ export class Satellite {
         { markGrid },
       );
       this.swathManager.appendSwathSample(lastImaging.nadirGround, {
-        fastPlayback,
-        sec,
         deferRebuild: true,
       });
       if (sec >= toSec) break;
     }
 
     this.swathManager._lastSec = toSec;
-    if (fastPlayback) {
-      this.swathManager.rebuildActiveChains({ fastPlayback: true });
-    }
+    this.swathManager.flushActiveChainRebuild();
 
     return (
       lastImaging ?? {
