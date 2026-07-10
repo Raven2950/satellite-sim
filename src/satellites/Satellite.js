@@ -52,13 +52,14 @@ export class Satellite {
   }
 
   _buildEntity() {
-    const { id, name, appearance } = this.config;
+    const { id, appearance } = this.config;
     const sec = 0;
 
     this.entity = this.viewer.entities.add({
       id,
-      name,
+      name: id,
       position: computeEcefPosition(this.orbitEpoch, sec, this.config.orbit),
+      label: { show: false },
       point: {
         show: false,
         pixelSize: appearance?.pointSize ?? 14,
