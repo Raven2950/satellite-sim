@@ -235,6 +235,15 @@ async function main() {
 
     registry.registerAll(DEFAULT_SATELLITES);
     await registry.loadAllModels();
+
+    viewer.scene.postRender.addEventListener(() => {
+      for (const sat of registry.satellites.values()) {
+        if (sat.entity?.label) {
+          sat.entity.label = undefined;
+        }
+      }
+    });
+
     onTimeChange();
 
     const timeControls = new TimeControls(simClock, { onChange: onTimeChange });

@@ -12,6 +12,11 @@ import { SensorCone, computeNadirOrientation } from './sensorCone.js';
 
 const { JulianDate } = Cesium;
 
+function stripEntityLabel(entity) {
+  if (!entity) return;
+  entity.label = undefined;
+}
+
 export class Satellite {
   constructor(viewer, config, orbitEpoch) {
     this.viewer = viewer;
@@ -57,9 +62,7 @@ export class Satellite {
 
     this.entity = this.viewer.entities.add({
       id,
-      name: id,
       position: computeEcefPosition(this.orbitEpoch, sec, this.config.orbit),
-      label: { show: false },
       point: {
         show: false,
         pixelSize: appearance?.pointSize ?? 14,
@@ -71,6 +74,7 @@ export class Satellite {
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
       },
     });
+    stripEntityLabel(this.entity);
   }
 
   loadModel() {
@@ -92,6 +96,7 @@ export class Satellite {
           maximumPixelSize: modelCfg.maximumPixelSize ?? 42,
         };
         if (this.entity.point) this.entity.point.show = false;
+        stripEntityLabel(this.entity);
         this.viewer.scene.requestRender();
         return true;
       } catch (err) {
@@ -157,6 +162,7 @@ export class Satellite {
     const modelCfg = this.config.appearance?.model ?? {};
 
     this.entity.position = pos;
+    stripEntityLabel(this.entity);
     this.entity.orientation = computeNadirOrientation(pos, vel, this.ellipsoid, {
       pitch: modelCfg.pitchDeg ?? 0,
       roll: modelCfg.rollDeg ?? 0,
