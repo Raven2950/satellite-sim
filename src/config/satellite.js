@@ -174,6 +174,7 @@ export function buildSatelliteConfigs({
       appearance: {
         pointColor: SATELLITE_COLORS[index % SATELLITE_COLORS.length],
         pointSize: 14,
+        showNameLabel: count >= 2,
         model: { ...SHARED_MODEL },
         sensorCone: { footprintScale: 0.55 },
       },
